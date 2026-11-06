@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+previews/
+*.tmp
+*.log
+.env
+bin/ffmpeg*
+bin/ffprobe*
+track_lab_project*.json
+*_distance_by_frame.csv
+selected_target_interval.csv
+nmea_interval.csv

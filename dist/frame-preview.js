@@ -37,6 +37,7 @@ globalThis.FramePreview = (() => {
         shown = null;
         const panel = node('framePreview');
         if (!panel) return;
+        if (document.fullscreenElement === panel) document.exitFullscreen().catch(()=>{});
         panel.hidden = true;
         node('previewImage').removeAttribute('src');
         if (imageUrl) URL.revokeObjectURL(imageUrl);
@@ -263,6 +264,11 @@ globalThis.FramePreview = (() => {
                 log.select();
                 node('previewLogStatus').textContent = '請按 Ctrl+C 複製';
             }
+        };
+        node('previewFullscreen').onclick = () => {
+            node('framePreview').requestFullscreen().catch(() => {
+                node('previewStatus').textContent = '瀏覽器無法開啟預覽全螢幕。';
+            });
         };
         node('previewOpenVideo').onclick = openVideo;
     }

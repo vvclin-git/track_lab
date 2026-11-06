@@ -182,11 +182,35 @@ const VideoPlayback = (() => {
         node('videoSettings').close?.();
         const start = table.frames.find(frame => AnalysisTools.inside(frame.t) && inClip(frame));
         if (start) seekUtc(start.t);
+        return true;
     }
+    async function restoreProjectFile(nextFile, saved) {
+        await new Promise((resolve,reject) => {
+            const events = new AbortController();
+            const timer = setTimeout(() => finish(Error('影片資訊讀取逾時')),15000);
+            function finish(error) {
+                clearTimeout(timer);
+                events.abort();
+                if (error) reject(error);
+                else resolve();
+            }
+            media.addEventListener('loadedmetadata',()=>finish(),{signal:events.signal});
+            media.addEventListener('error',()=>finish(Error('無法讀取影片')),{signal:events.signal});
+            open(nextFile);
+        });
+        if (!saved.tableId) return;
+        if (!frameVideos.some(table=>table.id===saved.tableId)) throw Error('找不到影片的 frame–UTC 配對表');
+        selectedVideo = saved.tableId;
+        fillVideos();
+        node('mediaFirst').value = saved.first;
+        node('mediaOrigin').value = saved.origin;
+        if (!bind()) throw Error('影片已讀取，但找不到有效的 frame–UTC 綁定');
+    }
+
     function setup() {
         media = node('localVideo');
         if (node('loadVideoEmpty')) node('loadVideoEmpty').onclick = () => node('openVideoSettings').click();
-        node('mediaFile').onchange = event => { open(event.target.files[0]); event.target.value = ''; };
+        node('mediaFile').onchange = event => { open(event.target.files[0]); node('projectVideoPath').value = ''; event.target.value = ''; };
         node('mediaClose').onclick = () => open(null);
         node('mediaBind').onclick = bind;
         node('mediaPlay').onclick = toggle;
@@ -246,7 +270,8 @@ const VideoPlayback = (() => {
 
     return {
         setup, active, unbind, seek, seekUtc, toggle, beginMapSeek,
-        coverage, fillTables, setRate, previewSource, pauseForPreview,
+        coverage, fillTables, setRate, previewSource, pauseForPreview, restoreProjectFile,
+        projectFile:()=>file ? {file,tableId:binding?.table.id,first:binding?.first.frame,origin:binding?.mediaOrigin} : null,
         filename: id => active() && binding.table.id === id ? node('mediaName').textContent : '',
         endMapSeek: () => { mapDragging = false; },
         isMapDragging: () => mapDragging

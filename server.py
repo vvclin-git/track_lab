@@ -159,6 +159,39 @@ class Handler(SimpleHTTPRequestHandler):
                                   headers={"X-Preview-PTS-Us":image.stem})
         self.send_error(404)
 
+    def project_file(self, data):
+        root = Path(data["root"])
+        if not root.is_absolute():
+            raise ValueError("需要專案資料夾的完整路徑")
+        root = root.resolve(strict=True)
+        relative = Path(data["path"])
+        if relative.is_absolute() or relative.drive or ".." in relative.parts:
+            raise ValueError("需要專案資料夾內的相對路徑")
+        file = (root / relative).resolve(strict=True)
+        if not file.is_relative_to(root) or not file.is_file():
+            raise ValueError("找不到專案資料夾內的檔案")
+        if file.suffix.lower() not in {".csv", ".txt", ".json", ".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}:
+            raise ValueError("不支援的專案檔案類型")
+        with file.open("rb") as stream:
+            before = os.fstat(stream.fileno())
+            if before.st_size != data["size"]:
+                raise ValueError("檔案大小與專案不符")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(4194304), b""):
+                digest.update(hashlib.sha256(chunk).digest())
+            after = os.fstat(stream.fileno())
+            if (before.st_mtime_ns != after.st_mtime_ns
+                    or digest.hexdigest() != data["fingerprint"]):
+                raise ValueError("檔案內容與專案指紋不符")
+            stream.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(before.st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, 1024**2)
+
     def do_POST(self):
         if not self.authorized():
             return self.send_error(403)
@@ -192,6 +225,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0<size<=512_000:
                 raise ValueError("請求大小不符")
             data = json.loads(self.rfile.read(size))
+            if self.path=="/api/project-file":
+                return self.project_file(data)
             if self.path=="/api/jobs":
                 if not FFMPEG:
                     raise ValueError("找不到 FFmpeg。請將 ffmpeg.exe 放在 bin 或加入 PATH。")
@@ -215,6 +250,8 @@ class Handler(SimpleHTTPRequestHandler):
                     process.terminate()
                 return self.reply({"ok":True})
             self.send_error(404)
+        except (BrokenPipeError,ConnectionResetError):
+            return
         except (ValueError,KeyError,TypeError,OSError) as error:
             self.reply({"error":str(error)},400)
 

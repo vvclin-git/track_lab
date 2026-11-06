@@ -1,12 +1,20 @@
 /* Workspace display and analysis exports use independent UTC ranges. */
 const AnalysisTools = (() => {
     let workspace = null, locked = '', pointLayer, rawFiles = [], ais = {};
+    const heldShips = new Set();
+    const aisRanges = new Map();
+    const pinRanges = new Map();
+    const aisId = () => locked || selected;
+    const pinMode = () => $('chartMode').value === 'pinDistance';
+    const rangeState = () => pinMode() ? [pinRanges, selectedPin] : [aisRanges, aisId()];
     const utc = s => s.replayTime ?? Date.parse(s.utc) / 1000;
     const inside = t => !workspace || t >= workspace[0] && t <= workspace[1];
     const bounds = full => workspace || full;
     const samples = () => workspace ? data.filter(s => inside(utc(s))) : data;
-    const range = () => $('chartMode').value === 'pinDistance'
-        ? [pinRangeStart, pinRangeEnd] : [begin, end];
+    const range = () => {
+        const [ranges,id] = rangeState();
+        return ranges.get(id) || [null,null];
+    };
     const valid = ([a, b]) => Number.isFinite(a) && Number.isFinite(b) && a <= b;
 
     function download(content, name) {
@@ -98,31 +106,42 @@ const AnalysisTools = (() => {
     }
 
     function target(mmsi, s) {
-        const t = utc(s), r = report(mmsi,t) || (locked === mmsi ? demoReport(mmsi,t) : null), p = ownAt(s);
-        if (!r && ais[mmsi]) return null;
+        const t = utc(s), r = report(mmsi,t) || (!ais[mmsi] && (locked === mmsi || heldShips.has(mmsi)) ? demoReport(mmsi,t) : null), p = ownAt(s);
+        if (!mmsi || mmsi === $('exclude').value.trim() || !r && ais[mmsi]) return null;
         if (!r) return targetsAt(s).find(x=>x[0]===mmsi && visible(x)) || null;
         const d = r.value;
-        const held = r.stale && locked === mmsi && $('holdAis').checked &&
-            inside(t);
+        const held = r.stale && heldShips.has(mmsi);
         if (!p || r.stale && !held) return null;
         const row = [mmsi,d.name,d.lat,d.lon,FusionCore.distance(p,d),t-r.time,d.sog,d.cog,d.heading,r.time,held];
-        return locked === mmsi || visible(row) ? row : null;
+        return locked === mmsi || heldShips.has(mmsi) || visible(row) ? row : null;
+    }
+
+    function visibleTargets(s) {
+        const rows = new Map(targetsAt(s).filter(visible).map(row=>[row[0],row]));
+        for (const id of heldShips) {
+            const row = target(id,s);
+            if (row) rows.set(id,row);
+        }
+        return [...rows.values()];
     }
 
     function renderLock(s) {
         $('lockAis').disabled = !selected && !locked;
         $('lockAis').textContent = locked ? '解除鎖定 ' + locked : '鎖定所選船隻';
-        $('holdAisLabel').hidden = !locked;
+        $('clearAis').disabled = !selected;
+        $('holdAisLabel').hidden = !selected;
+        $('holdAis').checked = heldShips.has(selected);
         const r = locked && report(locked,utc(s));
         const fallback = locked && !r ? demoReport(locked,utc(s)) : null;
         const last = r || fallback;
         $('lockedAisInfo').textContent = locked ? (last
             ? `${last.value.name || locked} · 最後回報 ${timeLabel(last.time)} · ${(utc(s)-last.time).toFixed(1)} 秒前`
             : locked + ' · 此刻之前無位置回報') : '';
-        if (!last || !map) return;
+        if (!last || !map || locked === $('exclude').value.trim() ||
+            (heldShips.has(locked) && target(locked,s))) return;
         L.circleMarker([last.value.lat,last.value.lon], {
             radius:8,color:'#713b9e',weight:2,fillOpacity:last.stale?.2:.65
-        }).addTo(markers).bindTooltip('鎖定 AIS · '+locked).on('click',()=>choose(locked));
+        }).addTo(markers).bindTooltip('鎖定 AIS · '+locked+(last.stale ? (heldShips.has(locked) ? ' · 沿用' : ' · 位置逾時') : '')).on('click',()=>choose(locked));
     }
 
     function demoReport(mmsi,t) {
@@ -133,8 +152,26 @@ const AnalysisTools = (() => {
         return null;
     }
 
-    function clips(a,b) {
-        return frameVideos.filter(v => v.frames.some(f => f.t >= a && f.t <= b));
+    function exportFrames(a,b) {
+        const clip = VideoPlayback.previewSource();
+        const video = clip?.binding.table || videoSelected();
+        if (!video) return {video,frames:[]};
+        const coverage = VideoPlayback.coverage();
+        const frames = video.frames.filter(f=>f.t>=a && f.t<=b &&
+            (!coverage || (f.t>=coverage[0] && f.t<=coverage[1])));
+        if (frames.length && coverage && Number.isFinite(a) && Number.isFinite(b) &&
+            (a<coverage[0] || b>coverage[1]) &&
+            !confirm('區間部分超出影片。匯出 '+timeLabel(frames[0].t)+' ～ '+timeLabel(frames.at(-1).t)+'？')) {
+            return {video,frames:[],cancelled:true};
+        }
+        return {video,frames};
+    }
+
+    function distanceFilename(video,target,frame=video?.frames[0]) {
+        const clean = value => String(value).replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').trim().slice(0,80);
+        const name = video && (videoName(video,frame) || video.label);
+        return [name && clean(name.replace(/\.[^.]+$/,'')),clean(target),
+            video?'distance_by_frame.csv':'distance_by_time.csv'].filter(Boolean).join('__');
     }
 
     function videoName(v,f) {
@@ -144,22 +181,52 @@ const AnalysisTools = (() => {
     function exportAis() {
         const [a,b] = range(), mmsi = locked || selected;
         if (!mmsi || !valid([a,b])) return alert('請先選取 AIS 目標，並設定有效的匯出起點與終點。');
-        const rows = [['sample_or_frame','utc','mmsi','distance_m','ais_age_s','own_source','own_sog_kn','own_cog_true_deg','heading_true_deg','wind_speed_ms','wind_from_true_deg','target_sog_kn','target_cog_true_deg','sun_azimuth_deg','sun_altitude_deg','camera_relative_heading_deg','horizontal_fov_deg','utc_assignment','video_filename','frame_utc_file','video_id','frame_number','frame_utc','ais_report_utc','ais_position_status']];
+        const rows = [['sample_or_frame','utc','mmsi','distance_m','ais_age_s','own_source','own_sog_kn','own_cog_true_deg','heading_true_deg','wind_speed_ms','wind_from_true_deg','target_sog_kn','target_cog_true_deg','sun_azimuth_deg','sun_altitude_deg','camera_relative_heading_deg','horizontal_fov_deg','utc_assignment','video_filename','frame_utc_file','video_id','frame_number','frame_utc','ais_report_utc','ais_position_status','target_name','target_type']];
+        const name = aisName(mmsi);
         const add = (s,v,f) => {
             const t = target(mmsi,s);
             const fields = t ? exportRow(s,t) : [s.frame??'',s.utc,mmsi,...Array(14).fill(''),s.quality?.assignment];
             if (f) fields[17] = f.assignment;
             rows.push([...fields,v ? videoName(v,f) : '',v?.path,v?.id,f?.frame,f?.utc,
                 t ? new Date((t[9]??utc(s)-t[5])*1000).toISOString() : '',
-                t ? t[10] ? 'held' : 'within_age_limit' : 'missing']);
+                t ? t[10] ? 'held' : 'within_age_limit' : 'missing',name,'ais']);
         };
-        const videos = clips(a,b);
-        for (const v of videos) for (const f of v.frames) {
-            if (f.t >= a && f.t <= b) add({...currentReplaySample(f.t),utc:f.utc,frame:f.frame,replayTime:f.t},v,f);
-        }
-        if (!videos.length) for (const s of data) if (utc(s)>=a && utc(s)<=b) add(s);
+        const {video,frames,cancelled} = exportFrames(a,b);
+        if (cancelled) return;
+        for (const f of frames) add({...currentReplaySample(f.t),utc:f.utc,frame:f.frame,replayTime:f.t},video,f);
+        if (!video) for (const s of data) if (utc(s)>=a && utc(s)<=b) add(s);
         if (rows.length === 1) return alert('所選區間內沒有可匯出的時間點。');
-        download(['\ufeff',rows.map(r=>r.map(FusionCore.csvCell).join(',')).join('\r\n')],'selected_target_interval.csv');
+        download(['\ufeff',rows.map(r=>r.map(FusionCore.csvCell).join(',')).join('\r\n')],distanceFilename(video,name,frames[0]));
+    }
+
+    function aisName(id) {
+        return ais[id]?.find(row=>row[1].name)?.[1].name ||
+            (!ais[id] && demoReport(id,SharedTimeline.current())?.value.name) || id;
+    }
+
+    function renderRange() {
+        const [ranges,id] = rangeState();
+        const [a,b] = ranges.get(id) || [null,null];
+        const distanceMode = pinMode() || $('chartMode').value === 'distance';
+        for (const key of ['start','end','jumpExportStart','jumpExportEnd','exportDistanceRange']) $(key).hidden = !distanceMode;
+        $('start').disabled = $('end').disabled = !id;
+        $('jumpExportStart').disabled = !Number.isFinite(a);
+        $('jumpExportEnd').disabled = !Number.isFinite(b);
+        $('exportDistanceRange').disabled = !id || !valid([a,b]);
+        $('rangeLabel').textContent = id
+            ? `分析／匯出：${pinMode()?pinSelected()?.name:aisName(id)}${!pinMode()&&locked?'（已鎖定）':''} · ${timeLabel(a)} ～ ${timeLabel(b)}`
+            : '尚未選取分析目標';
+    }
+
+    function jumpEndpoint(time) {
+        if (!Number.isFinite(time)) return;
+        if (!inside(time)) {
+            if (!confirm('此端點在工作區外。擴展工作區後跳轉？')) return;
+            workspace = [Math.min(workspace[0],time),Math.max(workspace[1],time)];
+            refreshWorkspace();
+        }
+        FramePreview.hide();
+        SharedTimeline.seekUtc(time);
     }
 
     const nmeaRange = () => $('nmeaExportRange').value === 'workspace'
@@ -221,6 +288,9 @@ const AnalysisTools = (() => {
     function reset(files = [], reports = {}) {
         workspace = null;
         locked = '';
+        heldShips.clear();
+        aisRanges.clear();
+        pinRanges.clear();
         rawFiles = files;
         ais = reports;
         $('holdAis').checked = false;
@@ -277,6 +347,28 @@ const AnalysisTools = (() => {
             workspace = [start,end];
             refreshWorkspace();
         };
+        $('workspaceFromVideo').onclick = () => {
+            const coverage = VideoPlayback.coverage();
+            if (!coverage) return alert('請先載入影片並套用 frame–UTC 配對表。');
+            const [first,last] = SharedTimeline.fullBounds();
+            const overlap = [Math.max(first,coverage[0]),Math.min(last,coverage[1])];
+            if (!valid(overlap)) return alert('影片與航跡沒有重疊時間。');
+            workspace = overlap;
+            refreshWorkspace();
+        };
+        for (const [i,key] of ['start','end'].entries()) {
+            $(key).onclick = () => {
+                const [ranges,id] = rangeState();
+                if (!id) return;
+                const times = [...range()];
+                times[i] = SharedTimeline.current();
+                ranges.set(id,times);
+                render();
+            };
+        }
+        $('jumpExportStart').onclick = () => jumpEndpoint(range()[0]);
+        $('jumpExportEnd').onclick = () => jumpEndpoint(range()[1]);
+        $('exportDistanceRange').onclick = () => pinMode() ? exportPin(true) : exportAis();
         $('workspaceClear').onclick = () => { workspace = null; refreshWorkspace(); };
         $('trackPoints').onchange = points;
         $('openNmeaExport').onclick = () => {
@@ -294,8 +386,14 @@ const AnalysisTools = (() => {
                 if (time !== undefined) FramePreview.show(time);
             };
         }
-        $('lockAis').onclick = () => { locked = locked ? '' : selected; $('holdAis').checked = false; render(); };
-        $('holdAis').onchange = () => render();
+        $('clearAis').onclick = () => choose('');
+        $('lockAis').onclick = () => { locked = locked ? '' : selected; render(); };
+        $('holdAis').onchange = () => {
+            if (!selected) return;
+            if ($('holdAis').checked) heldShips.add(selected);
+            else heldShips.delete(selected);
+            render();
+        };
         $('addCoordinatePin').onclick = () => {
             const latText = $('newPinLat').value.trim(), lonText = $('newPinLon').value.trim();
             const lat = Number(latText), lon = Number(lonText);
@@ -307,6 +405,14 @@ const AnalysisTools = (() => {
             map?.panTo([lat,lon]);
         };
     }
-    return {setup,reset,drawExportRange,inside,bounds,samples,points,pointTimes,clips,videoName,download,exportAis,target,renderLock,
-        locked:()=>locked};
+    return {setup,reset,drawExportRange,inside,bounds,samples,points,pointTimes,exportFrames,distanceFilename,videoName,range,renderRange,visibleTargets,download,exportAis,target,renderLock,
+        locked:()=>locked,
+        settings:()=>({locked,heldShips:[...heldShips]}),
+        restore(settings) {
+            locked = /^\d{9}$/.test(settings?.locked) ? settings.locked : '';
+            heldShips.clear();
+            if (Array.isArray(settings?.heldShips)) {
+                for (const id of settings.heldShips) if (typeof id === 'string' && /^\d{9}$/.test(id)) heldShips.add(id);
+            }
+        }};
 })();
