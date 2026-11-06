@@ -1,0 +1,46 @@
+/* Navigation, solar geometry and quality views. All bearings are clockwise from true north. */
+function sourceId(){return document.getElementById('source').value}
+function ownAt(s){return s.sources?.[sourceId()]?.position||null}
+function finite(v){return typeof v==='number'&&Number.isFinite(v)}
+function fmt(v,n=1){return finite(v)?v.toFixed(n):'—'}
+function norm(v){return (v%360+360)%360}
+function signed(v){return (v+540)%360-180}
+function dist(a,b){return FusionCore.distance(a,b)}
+function targetsAt(s){let op=ownAt(s);return op?s.targets.map(t=>{let v=t.slice();v[4]=dist(op,{lat:t[2],lon:t[3]});return v}):[]}
+function trueHeading(s){return finite(s.heading?.true_heading)?s.heading.true_heading:null}
+function trueCog(s){let m=s.sources?.[sourceId()]?.motion;return m?.ref===0&&finite(m.cog)?m.cog:null}
+function solarAt(s){let p=ownAt(s);if(!p||typeof SunCalc==='undefined')return null;let v=SunCalc.getPosition(new Date(s.utc),p.lat,p.lon);return {az:norm(v.azimuth*180/Math.PI+180),alt:v.altitude*180/Math.PI}}
+function cameraBearing(s){let el=document.getElementById('cameraOffset'),v=el.value,h=trueHeading(s);return v.trim()!==''&&finite(Number(v))&&Number(v)>=-180&&Number(v)<=180&&finite(h)?norm(h+Number(v)):null}
+function metric(label,value,detail){let el=document.createElement('div');el.className='metric';let a=document.createElement('small'),b=document.createElement('b'),c=document.createElement('small');a.textContent=label;b.textContent=value;c.textContent=detail||'';el.append(a,b,c);return el}
+function metrics(id,items){let el=document.getElementById(id);el.replaceChildren(...items.map(i=>metric(...i)))}
+function renderInstruments(s){let id=sourceId(),p=ownAt(s),m=s.sources?.[id]?.motion,h=trueHeading(s),c=trueCog(s),other=s.sources?.[id==='4'?'36':'4']?.position,delta=p&&other?dist(p,other):null,w=s.wind,aw=s.apparentWind,sol=solarAt(s),cam=cameraBearing(s);
+ metrics('navMetrics',[['SOG',fmt(finite(m?.sog)?m.sog*1.94384449:null)+' kn','來源 '+id],['COG · 真北',fmt(c)+'°','對地移動方向'],['Heading · 真北',fmt(h)+'°','船首 · 來源'+(s.heading?.source||document.getElementById('headingSource').value)],['定位來源差',fmt(delta)+' m','4 ↔ 36，非絕對誤差']]);
+ metrics('windMetrics',[['對地真風速',fmt(w?.speed)+' m/s','真北基準 · 來源'+document.getElementById('windSource').value],['真風來向',fmt(w?.angle)+'°','由此方向吹來'],['相對風速',fmt(aw?.speed)+' m/s','船上觀測的相對風'],['相對風來角',fmt(aw?.angle)+'°','船首0°，順時針']]);
+ let nd=document.getElementById('navDetails');nd.textContent=`磁北 Heading：${fmt(s.heading?.heading)}° ｜ 磁偏角：${fmt(s.heading?.variation_used,2)}° ｜ Heading 年齡：${fmt(s.heading?.age,2)} s。位置：${p?fmt(p.lat,6)+', '+fmt(p.lon,6):'無有效定位'}。`;
+ let f=s.quality||{},clk=s.clock?.[id],logger=(new Date(s.utc).getTime()/1000),clockDiff=clk?logger-clk.age-clk.epoch:null;
+ document.getElementById('quality').textContent=f.assignment==='sensor'?`感測器 UTC：${s.utc}。依原始epoch建立，NMEA偏移 ${f.nmea_offset??0} s／AIS偏移 ${f.ais_offset??0} s。定位跨點間隔 ${fmt(p?.gap,3)} s；SOG/COG年齡 ${fmt(m?.age,2)} s；真風年齡 ${fmt(w?.age,2)} s。記錄時間−設備回報時間 ${fmt(clockDiff,3)} s。缺口／過期資料不補值，未自動校正時鐘。`:`影片 UTC：${s.utc}。PTS：${s.pts.toFixed(3)} s；影格 ${s.frame}。UTC 分配：${{anchor:'錨點配適',interpolated:'錨點間內插',extrapolated:'錨點外推'}[f.assignment]||f.assignment}；距錨點 ${fmt(f.anchor_distance_s,2)} s；殘差 ${fmt(f.residual_ms,2)} ms。PTS ${f.pts_estimated?'為推估值':'來自影片'}。定位跨點間隔 ${fmt(p?.gap,3)} s；SOG/COG 年齡 ${fmt(m?.age,2)} s；真風年齡 ${fmt(w?.age,2)} s。記錄時間−設備回報時間 ${fmt(clockDiff,3)} s（非同步誤差量測，未自動校正）。`;
+ metrics('sunMetrics',[['太陽方位 · 真北',fmt(sol?.az)+'°','幾何估算'],['太陽高度',fmt(sol?.alt)+'°',sol&&sol.alt<0?'太陽在地平線下':'地平線以上']]);
+ document.getElementById('relativeSun').textContent=sol?`太陽相對船首：${finite(h)?relative(sol.az-h):'無有效 Heading'}；相對攝影機：${finite(cam)?relative(sol.az-cam):'請填攝影機安裝角度'}。`:'太陽角度無法計算';
+ drawCompass(h,c,sol,cam);document.getElementById('stats').replaceChildren();let top=document.createElement('div');top.textContent=`來源 ${id} · ${s.frame===null?'感測器回放':'影格 '+s.frame.toLocaleString()} · ${p?fmt(p.lat,6)+', '+fmt(p.lon,6):'定位無效'}`;document.getElementById('stats').append(top);
+ let hud=document.createElement('div');hud.className='hud';for(let text of [`SOG ${fmt(finite(m?.sog)?m.sog*1.94384449:null)} kn`,`COG ${fmt(c)}°`,`HDG ${fmt(h)}°`,`真風 ${fmt(w?.speed)} m/s · ${fmt(w?.angle)}° 來`]){let el=document.createElement('span');el.textContent=text;hud.append(el)}document.getElementById('stats').append(hud);
+}
+function relative(v){let a=signed(v);return (a>=0?'右舷 ':'左舷 ')+Math.abs(a).toFixed(1)+'°'}
+function drawCompass(h,c,s,cam){let svg=document.getElementById('compass'),ns='http://www.w3.org/2000/svg';svg.replaceChildren();function add(tag,attrs,text){let el=document.createElementNS(ns,tag);for(let [k,v]of Object.entries(attrs))el.setAttribute(k,v);if(text)el.textContent=text;svg.append(el)}add('circle',{cx:120,cy:100,r:74,fill:'#f0f6f7',stroke:'#cedde3'});for(let [v,x,y]of[['N',120,15],['E',207,104],['S',120,194],['W',28,104]])add('text',{x,y,'text-anchor':'middle',fill:'#54717d','font-size':13},v);for(let [a,color,name,len]of[[h,'#159d94','船首',65],[c,'#4779ba','COG',53],[s?.az,'#e7a120','太陽',74],[cam,'#9063c0','鏡頭',60]])if(finite(a)){let r=a*Math.PI/180,x=120+len*Math.sin(r),y=100-len*Math.cos(r);add('line',{x1:120,y1:100,x2:x,y2:y,stroke:color,'stroke-width':3});add('text',{x:x+5,y:y-3,fill:color,'font-size':11},name)}}
+function dest(p,bearing,meters){let a=bearing*Math.PI/180,d=meters/6371008.8,la=p.lat*Math.PI/180,lo=p.lon*Math.PI/180,nla=Math.asin(Math.sin(la)*Math.cos(d)+Math.cos(la)*Math.sin(d)*Math.cos(a)),nlo=lo+Math.atan2(Math.sin(a)*Math.sin(d)*Math.cos(la),Math.cos(d)-Math.sin(la)*Math.sin(nla));return [nla*180/Math.PI,nlo*180/Math.PI]}
+function arrow(layer,p,b,len,color,label){if(!finite(b))return;let tip=dest(p,b,len),back={lat:tip[0],lon:tip[1]},left=dest(back,b+155,len*.22),right=dest(back,b-155,len*.22);L.polyline([[p.lat,p.lon],tip],{color,weight:2}).addTo(layer).bindTooltip(label);L.polyline([left,tip,right],{color,weight:2}).addTo(layer)}
+function drawOverlays(s,ts){let p=ownAt(s);if(!p)return;let layer=connection,h=trueHeading(s),c=trueCog(s),other=s.sources?.[sourceId()==='4'?'36':'4']?.position;
+ if(finite(h))own.setIcon(L.divIcon({className:'ship-icon',html:`<div class="ship-glyph" style="transform:rotate(${h}deg)"></div>`,iconSize:[0,0]}));else own.setIcon(L.divIcon({className:'dot',iconSize:[14,14]}));
+ arrow(layer,p,c,100,'#4779ba','本船 COG · 真北');if(document.getElementById('compare').checked&&other){L.circleMarker([other.lat,other.lon],{radius:5,color:'#b45bc3',fillOpacity:.8}).addTo(layer).bindTooltip('另一定位來源，差異不等於絕對誤差');L.polyline([[p.lat,p.lon],[other.lat,other.lon]],{color:'#b45bc3',weight:1}).addTo(layer)}
+ let cam=cameraBearing(s),fov=Number(document.getElementById('fov').value),range=Number(document.getElementById('fovRange').value);if(document.getElementById('showFov').checked&&finite(cam)&&fov>0&&fov<180&&range>=10&&range<=5000){let pts=[[p.lat,p.lon]];for(let a=cam-fov/2;a<=cam+fov/2+.0001;a+=fov/30)pts.push(dest(p,a,range));pts.push([p.lat,p.lon]);L.polygon(pts,{color:'#9063c0',fillOpacity:.1,weight:1}).addTo(layer).bindTooltip('攝影機水平視角示意，非檢出範圍')}
+ let sol=solarAt(s);if(document.getElementById('showSun').checked&&sol&&sol.alt>=0)arrow(layer,p,sol.az,250,'#e7a120','朝向太陽');if(document.getElementById('showWind').checked&&finite(s.wind?.angle))arrow(layer,p,norm(s.wind.angle+180),180,'#438fce','真風吹去方向（來向＋180°）');
+ for(let t of ts)if(finite(t[7])&&finite(t[6])&&t[6]>.2)arrow(layer,{lat:t[2],lon:t[3]},t[7],Math.min(220,50+t[6]*10),'#be7837','AIS COG · 真北');
+}
+function renderSelected(s,t){let el=document.getElementById('selectedInfo');el.textContent=t?`${t[1]||t[0]} ｜ SOG ${fmt(t[6])} kn ｜ COG ${fmt(t[7])}° 真北 ｜ Heading ${fmt(t[8])}° ｜ ${fmt(t[5])} 秒前。距離為上一筆 AIS 位置估算。`:(selected?'此刻選定目標無有效資料':'選取目標可查看 SOG／COG');}
+function curveValue(s,mode){if(mode==='distance'){let t=AnalysisTools.target(AnalysisTools.locked()||selected,s);return t?t[4]:null}if(mode==='sog'){let v=s.sources?.[sourceId()]?.motion?.sog;return finite(v)?v*1.94384449:null}if(mode==='cog')return trueCog(s);if(mode==='heading')return trueHeading(s);return finite(s.wind?.speed)?s.wind.speed:null}
+function setupInstruments(){for(let [btn,panel]of[['tabTargets','panelTargets'],['tabNav','panelNav'],['tabLight','panelLight'],['tabPins','panelPins']])document.getElementById(btn).onclick=()=>{for(let b of ['tabTargets','tabNav','tabLight','tabPins'])document.getElementById(b).classList.toggle('active',b===btn);for(let p of ['panelTargets','panelNav','panelLight','panelPins'])document.getElementById(p).hidden=p!==panel;render()};
+ for(let id of ['cameraOffset','fov','fovRange','showFov','showSun','showWind','compare','chartMode'])document.getElementById(id).oninput=()=>render();
+ document.getElementById('source').onchange=()=>{rebuildTrack();render()};
+}
+if(typeof module!=='undefined')module.exports={norm,signed,dist,dest,relative};
+
+function exportRow(s,t){let motion=s.sources?.[sourceId()]?.motion,sun=solarAt(s);return [s.frame??'',s.utc,t[0],t[4].toFixed(3),t[5],sourceId(),finite(motion?.sog)?motion.sog*1.94384449:'',trueCog(s)??'',trueHeading(s)??'',s.wind?.speed??'',s.wind?.angle??'',t[6]??'',t[7]??'',sun?.az??'',sun?.alt??'',document.getElementById('cameraOffset').value,document.getElementById('fov').value,s.quality.assignment]}

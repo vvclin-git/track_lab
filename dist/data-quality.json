@@ -1,0 +1,25 @@
+{
+  "snapshots": 323,
+  "clock_logger_minus_device_seconds": {
+    "4": {
+      "median": -0.235443115234375,
+      "min": -0.9981956481933594,
+      "max": 1.1881535053253174
+    },
+    "36": {
+      "median": -0.9326295852661133,
+      "min": -1.0309457778930664,
+      "max": 0.11744475364685059
+    }
+  },
+  "fields": [
+    "129025",
+    "129026",
+    "127250",
+    "127258",
+    "130306",
+    "126992"
+  ],
+  "reference": "https://canboat.github.io/canboat/canboat.html",
+  "note": "Logger timestamps retained; no automatic clock calibration. AIS speed presumed knots per original AIS decoder schema."
+}
