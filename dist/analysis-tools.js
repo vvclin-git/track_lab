@@ -61,12 +61,38 @@ const AnalysisTools = (() => {
         g.restore();
     }
 
-    function pointTimes(step) {
+    function videoIntervals() {
+        const loaded = VideoPlayback.coverage();
+        const intervals = VideoCatalog.active() ? VideoCatalog.clips().map(VideoCatalog.bounds)
+            : loaded ? [loaded] : [];
+        const merged = [];
+        for (const [start,end] of intervals.sort((a,b)=>a[0]-b[0])) {
+            const previous = merged.at(-1);
+            if (previous && start<=previous[1]) previous[1] = Math.max(previous[1],end);
+            else merged.push([start,end]);
+        }
+        return merged;
+    }
+
+    function intervalIndex(intervals,time) {
+        const index = FusionCore.lower(intervals,time);
+        return index>=0 && time<=intervals[index][1] ? index : -1;
+    }
+
+    let previousCoverage = '';
+    function refreshVideoTrack() {
+        const signature = JSON.stringify(videoIntervals());
+        if (signature===previousCoverage) return;
+        previousCoverage = signature;
+        rebuildTrack();
+    }
+
+    function pointTimes(step, intervals = null) {
         const [start,end] = SharedTimeline.bounds();
         const rows = framePositionRows();
         const times = [];
         for (let t = Math.ceil(start / step) * step; t <= end; t += step) {
-            if (FusionCore.position(rows,t,analysisGap())) times.push(t);
+            if ((!intervals || intervalIndex(intervals,t)>=0) && FusionCore.position(rows,t,analysisGap())) times.push(t);
         }
         return times;
     }
@@ -84,10 +110,11 @@ const AnalysisTools = (() => {
         const defaultStep = 5;
         const pointBudget = map.getZoom() >= 17 ? 10000 : 1200;
         const step = defaultStep * Math.max(1, Math.ceil((end - start) / (pointBudget * defaultStep)));
-        for (const t of pointTimes(step)) {
+        const intervals = videoIntervals();
+        for (const t of pointTimes(step,$('trackVideoOnly').checked ? intervals : null)) {
             const p = FusionCore.position(framePositionRows(), t, analysisGap());
             const marker = L.circleMarker([p.lat,p.lon], {
-                radius:3, weight:1, color:'#087d77', fillOpacity:.65, bubblingMouseEvents:false
+                radius:3, weight:1, color:intervalIndex(intervals,t)>=0?'#c85c0a':'#087d77', fillOpacity:.65, bubblingMouseEvents:false
             }).addTo(pointLayer);
             marker.bindTooltip(timeLabel(t));
             marker.on('click', () => addingPin ? (createPin(p.lat,p.lon),setAddingPin(false)) : FramePreview.show(t));
@@ -237,20 +264,28 @@ const AnalysisTools = (() => {
         SharedTimeline.seekUtc(time);
     }
 
-    const nmeaRange = () => $('nmeaExportRange').value === 'workspace'
-        ? SharedTimeline.bounds() : range();
+    function nmeaRanges() {
+        const mode = $('nmeaExportRange').value;
+        if (mode==='video') return videoIntervals();
+        const selection = mode==='workspace' ? SharedTimeline.bounds() : range();
+        return valid(selection) ? [selection] : [];
+    }
     const duration = (a,b) => `${Math.floor((b-a)/60)} 分 ${((b-a)%60).toFixed(3)} 秒`;
     function updateNmeaExport() {
-        const selection = nmeaRange();
-        $('nmeaExportSummary').textContent = valid(selection)
-            ? selection.map(timeLabel).join(' ～ ') + '（臺灣時間，' + duration(...selection) + '）'
-            : '請先在圖表設定有效的匯出起點與終點。';
-        $('exportNmea').disabled = !rawFiles.length || !valid(selection);
+        const intervals = nmeaRanges();
+        const mode = $('nmeaExportRange').value;
+        $('nmeaExportSummary').textContent = intervals.length
+            ? mode==='video'
+                ? `${intervals.length} 個影片涵蓋區間，共 ${duration(0,intervals.reduce((sum,[a,b])=>sum+b-a,0))}，略過段間空白。`
+                : intervals[0].map(timeLabel).join(' ～ ') + '（臺灣時間，' + duration(...intervals[0]) + '）'
+            : mode==='video' ? '目前沒有影片涵蓋區間。' : '請先在圖表設定有效的匯出起點與終點。';
+        $('exportNmea').disabled = !rawFiles.length || !intervals.length;
     }
 
     async function exportNmea() {
-        const [a,b] = nmeaRange();
-        if (!valid([a,b])) return alert('請先設定有效的匯出起點與終點。');
+        const intervals = nmeaRanges();
+        const mode = $('nmeaExportRange').value;
+        if (!intervals.length) return updateNmeaExport();
         if (!rawFiles.length) return alert('請先匯入原始 NMEA 並建立回放。');
         const files = rawFiles;
         const offset = activeProject.settings?.nmeaOffset || 0;
@@ -269,7 +304,7 @@ const AnalysisTools = (() => {
                     if (fields.length !== 4) return;
                     if (/^(time|timestamp|epoch)/i.test(fields[0])) { header ||= clean; return; }
                     const t = Number(fields[0]) + offset;
-                    if (!fields[0] || t<a || t>b || !Number.isFinite(t)) return;
+                    if (!fields[0] || !Number.isFinite(t) || intervalIndex(intervals,t)<0) return;
                     parts.push(line.replace(/\r$/,'')+'\r\n');
                     count++;
                 };
@@ -286,7 +321,7 @@ const AnalysisTools = (() => {
             }
             if (!count) return status.textContent = '所選區間沒有 NMEA 紀錄。';
             if (header) parts.unshift(header+'\r\n');
-            download(parts,'nmea_interval.csv');
+            download(parts,mode==='video'?'nmea_video_coverage.csv':'nmea_interval.csv');
             status.textContent = `已匯出 ${count.toLocaleString()} 筆紀錄。`;
         } catch (e) {
             status.textContent = 'NMEA 匯出失敗：'+e.message;
@@ -379,6 +414,7 @@ const AnalysisTools = (() => {
         $('exportDistanceRange').onclick = () => pinMode() ? exportPin(true) : exportAis();
         $('workspaceClear').onclick = () => { workspace = null; refreshWorkspace(); };
         $('trackPoints').onchange = points;
+        $('trackVideoOnly').onchange = rebuildTrack;
         $('openNmeaExport').onclick = () => {
             $('nmeaExportStatus').textContent = rawFiles.length ? '' : '請先匯入原始 NMEA 並建立回放。';
             updateNmeaExport();
@@ -389,7 +425,7 @@ const AnalysisTools = (() => {
         for (const [id,forward] of [['previousTrackPoint',false],['nextTrackPoint',true]]) {
             $(id).onclick = () => {
                 const now = SharedTimeline.current();
-                const times = pointTimes(5);
+                const times = pointTimes(5,$('trackVideoOnly').checked ? videoIntervals() : null);
                 const time = forward ? times.find(t=>t>now+.05) : times.findLast(t=>t<now-.05);
                 if (time !== undefined) FramePreview.show(time);
             };
@@ -413,7 +449,7 @@ const AnalysisTools = (() => {
             map?.panTo([lat,lon]);
         };
     }
-    return {setup,reset,drawExportRange,inside,bounds,samples,points,pointTimes,exportFrames,distanceFilename,videoName,range,renderRange,visibleTargets,download,exportAis,target,renderLock,
+    return {setup,reset,videoIntervals,intervalIndex,refreshVideoTrack,drawExportRange,inside,bounds,samples,points,pointTimes,exportFrames,distanceFilename,videoName,range,renderRange,visibleTargets,download,exportAis,target,renderLock,
         locked:()=>locked,
         settings:()=>({locked,heldShips:[...heldShips]}),
         restore(settings) {

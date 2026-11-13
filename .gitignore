@@ -11,3 +11,5 @@ track_lab_project*.json
 *_distance_by_frame.csv
 selected_target_interval.csv
 nmea_interval.csv
+
+nmea_video_coverage.csv

@@ -41,6 +41,7 @@ const SharedTimeline = (() => {
         }
         band.hidden = !band.childElementCount;
         VideoCatalog.render(current());
+        AnalysisTools.refreshVideoTrack();
         node('timelineStart').textContent = timeLabel(start);
         node('timelineEnd').textContent = timeLabel(end);
     }
