@@ -8,8 +8,8 @@ const SharedTimeline = (() => {
             starts.push(Date.parse(data[0].utc) / 1000);
             ends.push(Date.parse(data.at(-1).utc) / 1000);
         }
-        const video = videoSelected();
-        if (video?.frames.length) {
+        const videos = VideoCatalog.active() ? VideoCatalog.clips() : [videoSelected()];
+        for (const video of videos) if (video?.frames.length) {
             starts.push(video.frames[0].t);
             ends.push(video.frames.at(-1).t);
         }
@@ -24,15 +24,23 @@ const SharedTimeline = (() => {
         const seek = node('seek');
         seek.max = Math.max(0.001, end - start);
         if (!dragging) seek.value = current() - start;
-        const clip = VideoPlayback.coverage();
-        const coverage = clip && clip[0]<=end && clip[1]>=start ? [Math.max(start,clip[0]),Math.min(end,clip[1])] : null;
         const band = node('videoCoverage');
-        band.hidden = !coverage;
-        if (coverage) {
-            const length = Math.max(0.001, end - start);
-            band.style.left = Math.max(0, (coverage[0] - start) / length * 100) + '%';
-            band.style.width = Math.max(0, (coverage[1] - coverage[0]) / length * 100) + '%';
+        band.replaceChildren();
+        const loaded = VideoPlayback.coverage();
+        const intervals = VideoCatalog.active()
+            ? VideoCatalog.clips().map(clip=>[...VideoCatalog.bounds(clip),VideoCatalog.hasFile(clip)])
+            : loaded ? [[...loaded,true]] : [];
+        const length = Math.max(0.001,end-start);
+        for (const [a,b,matched] of intervals) {
+            if (a>end || b<start) continue;
+            const span = document.createElement('span');
+            span.dataset.matched = matched;
+            span.style.left = ((Math.max(a,start)-start)/length*100)+'%';
+            span.style.width = ((Math.min(b,end)-Math.max(a,start))/length*100)+'%';
+            band.append(span);
         }
+        band.hidden = !band.childElementCount;
+        VideoCatalog.render(current());
         node('timelineStart').textContent = timeLabel(start);
         node('timelineEnd').textContent = timeLabel(end);
     }

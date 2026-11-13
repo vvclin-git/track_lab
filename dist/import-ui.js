@@ -7,7 +7,7 @@ const missingInputs = project => project.files.filter(f=>!importRows.some(r=>
 
 const projectIds=['source','radius','age','exclude','cameraOffset','fov','fovRange','follow','compare','showFov','showSun','showWind','chartMode','sampleStep','ownGap','headingSource','windSource','nmeaOffset','aisOffset'];
 function info(msg){document.getElementById('importStatus').textContent=msg}
-function makeWorker(){if(importWorker)return importWorker;importWorker=new Worker('import-worker.js?v=10');importWorker.onmessage=e=>{let m=e.data;if(m.type==='progress')info(m.text);if(m.type==='parsed'){importRows.push(...m.results);for(const r of m.results)if(r.status!=='ok')importFiles.delete(r.id);setBusy(false);previewImports();info('解析完成。請核對檔案範圍與時間設定，再建立回放。');if(autoRestore&&!missingInputs(autoRestore.project).length){
+function makeWorker(){if(importWorker)return importWorker;importWorker=new Worker('import-worker.js?v=11');importWorker.onmessage=e=>{let m=e.data;if(m.type==='progress')info(m.text);if(m.type==='parsed'){importRows.push(...m.results);for(const r of m.results)if(r.status!=='ok')importFiles.delete(r.id);setBusy(false);previewImports();info('解析完成。請核對檔案範圍與時間設定，再建立回放。');if(autoRestore&&!missingInputs(autoRestore.project).length){
     if(importRows.some(r=>r.type==='nmea'&&r.status==='ok'))buildImported();
     else if(autoRestore.project.kind==='demo'){
         setBusy(true);
@@ -25,7 +25,7 @@ function previewImports(){let box=document.getElementById('filePreview');box.rep
 }
 function numeric(id,min,max){let v=document.getElementById(id).value,n=Number(v);if(v.trim()===''||!Number.isFinite(n)||n<min||n>max)throw Error(id+' 的數值不在允許範圍');return n}
 function buildImported(){if(importBusy)return;try{if(!importRows.some(r=>r.status==='ok'&&r.type==='nmea'))throw Error('至少需要一份可用 NMEA');if(importRows.some(r=>r.status==='ok'&&r.errors>0)&&!document.getElementById('skipBad').checked)throw Error('有錯誤列，請移除檔案或勾選允許跳過錯誤列');let settings={source:document.getElementById('source').value,step:numeric('sampleStep',1,60),ownGap:numeric('ownGap',.01,60),headingSource:String(numeric('headingSource',0,255)),windSource:String(numeric('windSource',0,255)),nmeaOffset:numeric('nmeaOffset',-86400,86400),aisOffset:numeric('aisOffset',-86400,86400)};if(!Number.isInteger(Number(settings.headingSource))||!Number.isInteger(Number(settings.windSource)))throw Error('來源位址需為整數');setBusy(true);info('正在合併與建立回放快照…');makeWorker().postMessage({action:'build',settings})}catch(e){autoRestore=null;info(e.message)}}
-function applyReplay(next,project){VideoPlayback.unbind();if(!Array.isArray(next)||!next.length)throw Error('回放沒有資料');playing=false;lastTick=0;acc=0;index=0;selected='';data=next;activeProject=project;AnalysisTools.reset(project.nmeaFiles,project.aisReports);cursorTime=null;if(project.kind==='demo'){rawPositions=Object.fromEntries(Object.keys(next[0].sources).map(src=>[src,next.map(s=>[Date.parse(s.utc)/1000,s.sources[src]?.position||null])]));frameVideos=[];selectedVideo='';fillVideos()}analysisRevision++;analysisCache=null;$('seek').max=data.length-1;$('seek').value=0;let select=$('source'),current=select.value,sources=project.sources||Object.keys(data[0].sources);select.replaceChildren();for(let src of sources){let opt=document.createElement('option');opt.value=src;opt.textContent='來源 '+src;select.append(opt)}select.value=sources.includes(current)?current:(sources.includes('4')?'4':sources[0]);$('play').textContent='▶ 播放';$('rangeLabel').textContent='尚未選取區間';$('datasetLabel').textContent=project.kind==='import'?`已匯入 ${project.files.length} 份檔案 · ${timeLabel(project.meta.start)} ～ ${timeLabel(project.meta.end)} · 每 ${project.meta.step} 秒回放`:'2026.10.21 內建範例 · 本船定位 × AIS';$('dataNote').textContent=project.kind==='import'?`本機解析。每 ${project.meta.step} 秒快照，共 ${data.length} 筆；可查看距離≤5 km且年齡≤30秒的AIS。重複紀錄 ${project.meta.duplicates} 筆，衝突 ${project.meta.conflicts} 筆。${project.meta.truncated?'部分時間目標超過500筆，僅保留較近目標。':''}`:'內建資料約每秒一筆，距離上限5 km／AIS年齡30秒。';if(map){rebuildTrack();markers.clearLayers();connection.clearLayers();if(track.getBounds().isValid())map.fitBounds(track.getBounds().pad(.2))}else initMap();render()}
+function applyReplay(next,project){VideoPlayback.unbind();if(!Array.isArray(next)||!next.length)throw Error('回放沒有資料');playing=false;lastTick=0;acc=0;index=0;selected='';data=next;activeProject=project;AnalysisTools.reset(project.nmeaFiles,project.aisReports);cursorTime=null;if(project.kind==='demo'){VideoCatalog.replace([],null);VideoCatalog.refreshOptions();rawPositions=Object.fromEntries(Object.keys(next[0].sources).map(src=>[src,next.map(s=>[Date.parse(s.utc)/1000,s.sources[src]?.position||null])]));frameVideos=[];selectedVideo='';fillVideos()}analysisRevision++;analysisCache=null;$('seek').max=data.length-1;$('seek').value=0;let select=$('source'),current=select.value,sources=project.sources||Object.keys(data[0].sources);select.replaceChildren();for(let src of sources){let opt=document.createElement('option');opt.value=src;opt.textContent='來源 '+src;select.append(opt)}select.value=sources.includes(current)?current:(sources.includes('4')?'4':sources[0]);$('play').textContent='▶ 播放';$('rangeLabel').textContent='尚未選取區間';$('datasetLabel').textContent=project.kind==='import'?`已匯入 ${project.files.length} 份檔案 · ${timeLabel(project.meta.start)} ～ ${timeLabel(project.meta.end)} · 每 ${project.meta.step} 秒回放`:'2026.10.21 內建範例 · 本船定位 × AIS';$('dataNote').textContent=project.kind==='import'?`本機解析。每 ${project.meta.step} 秒快照，共 ${data.length} 筆；可查看距離≤5 km且年齡≤30秒的AIS。重複紀錄 ${project.meta.duplicates} 筆，衝突 ${project.meta.conflicts} 筆。${project.meta.truncated?'部分時間目標超過500筆，僅保留較近目標。':''}`:'內建資料約每秒一筆，距離上限5 km／AIS年齡30秒。';if(map){rebuildTrack();markers.clearLayers();connection.clearLayers();if(track.getBounds().isValid())map.fitBounds(track.getBounds().pad(.2))}else initMap();render()}
 async function captureSettings(){
     const controls=Object.fromEntries(projectIds.map(id=>[id,$(id).type==='checkbox'?$(id).checked:$(id).value]));
     const source=importRows.some(r=>r.status==='ok')?importRows.filter(r=>r.status==='ok'):activeProject.files||[];
@@ -34,12 +34,12 @@ async function captureSettings(){
     const media=VideoPlayback.projectFile();
     const root=$('projectRoot').value.trim();
     let video;
-    if(media&&root){
+    if(media&&root&&!VideoCatalog.active()){
         const {file,...binding}=media;
         video={...binding,name:file.name,path:$('projectVideoPath').value.trim()||file.name,
             size:file.size,fingerprint:await fingerprint(file)};
     }
-    return {format:'track-lab-project',version:3,fusion:fusionSettings(),created:new Date().toISOString(),
+    return {format:'track-lab-project',version:4,catalog:VideoCatalog.active()?VideoCatalog.settings():undefined,fusion:fusionSettings(),created:new Date().toISOString(),
         timezone:'Asia/Taipei',kind:activeProject.kind,files,controls,root,video,
         ais:AnalysisTools.settings(),skipBad:$('skipBad').checked};
 }
@@ -100,7 +100,7 @@ async function restoreProjectInputs(project,root){
             try { files.push(await readProjectFile(root,entry,request.signal)); paths.push(entry.name); }
             catch(e) { if(request.signal.aborted)return; errors.push(entry.name+'：'+e.message); }
         }
-        if(project.video){
+        if(project.video&&!project.catalog){
             try { video=await readProjectFile(root,project.video,request.signal); }
             catch(e) { if(request.signal.aborted)return; errors.push(project.video.name+'：'+e.message); }
         }
@@ -110,13 +110,14 @@ async function restoreProjectInputs(project,root){
     else await finishAutoRestore();
 }
 
-async function loadSettings(file){try{if(file.size>1048576)throw Error('設定檔超過1 MB');let v=JSON.parse(await file.text());if(v.format!=='track-lab-project'||![1,2,3].includes(v.version)||!v.controls||!Array.isArray(v.files))throw Error('不支援的專案設定格式／版本');validateFusionSettings(v.fusion);for(let id of projectIds){let val=v.controls[id],e=document.getElementById(id);if(val===undefined)continue;if(e.type==='checkbox'){if(typeof val!=='boolean')throw Error('設定型別錯誤：'+id)}else if(typeof val!=='string'||val.length>100)throw Error('設定型別錯誤：'+id)}if(v.files.some(f=>typeof f.name!=='string'||!Number.isFinite(f.size)))throw Error('檔案清單格式不符');for(let id of projectIds){let val=v.controls[id],e=document.getElementById(id);if(val===undefined)continue;if(e.type==='checkbox')e.checked=val;else if(e.tagName==='SELECT'&&!Array.from(e.options).some(o=>o.value===val)){if(id==='source'){let o=document.createElement('option');o.value=val;o.textContent='來源 '+val;e.append(o);e.value=val}}else e.value=val}importWorker?.terminate();importWorker=null;importRows=[];importFiles.clear();autoRestore=null;
+async function loadSettings(file){try{if(file.size>1048576)throw Error('設定檔超過1 MB');let v=JSON.parse(await file.text());if(v.format!=='track-lab-project'||![1,2,3,4].includes(v.version)||!v.controls||!Array.isArray(v.files))throw Error('不支援的專案設定格式／版本');validateFusionSettings(v.fusion);for(let id of projectIds){let val=v.controls[id],e=document.getElementById(id);if(val===undefined)continue;if(e.type==='checkbox'){if(typeof val!=='boolean')throw Error('設定型別錯誤：'+id)}else if(typeof val!=='string'||val.length>100)throw Error('設定型別錯誤：'+id)}if(v.files.some(f=>typeof f.name!=='string'||!Number.isFinite(f.size)))throw Error('檔案清單格式不符');for(let id of projectIds){let val=v.controls[id],e=document.getElementById(id);if(val===undefined)continue;if(e.type==='checkbox')e.checked=val;else if(e.tagName==='SELECT'&&!Array.from(e.options).some(o=>o.value===val)){if(id==='source'){let o=document.createElement('option');o.value=val;o.textContent='來源 '+val;e.append(o);e.value=val}}else e.value=val}importWorker?.terminate();importWorker=null;importRows=[];importFiles.clear();autoRestore=null;
+VideoCatalog.replace([],null);frameVideos=[];VideoCatalog.refreshOptions();VideoPlayback.close();
 pendingSettings=v;$('skipBad').checked=v.skipBad===true;
 const typedRoot=$('projectRoot').value.trim();
 const rootOverride=typedRoot!==lastProjectRoot?typedRoot:'';
 const root=(typeof v.root==='string'&&v.root)||rootOverride;
 $('projectRoot').value=lastProjectRoot=rootOverride||root;
-restoreFusionSettings(v.fusion);AnalysisTools.restore(v.ais);previewImports();if(data.length){rebuildTrack();render()}if(v.version===3&&root&&globalThis.trackLabToken){
+restoreFusionSettings(v.fusion);AnalysisTools.restore(v.ais);previewImports();if(data.length){rebuildTrack();render()}if(v.version>=3&&root&&globalThis.trackLabToken){
     await restoreProjectInputs(v,rootOverride||root);
 
 }else info('專案設定已載入；請選取相符原始檔案後建立回放。')}catch(e){info('設定載入失敗：'+e.message)}}

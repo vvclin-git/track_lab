@@ -23,7 +23,7 @@ const LocalFFmpeg = (() => {
 
     async function register(clip,signal) {
         if (file === clip.file && videoId) return videoId;
-        const result = await (await call('video',clip.file,signal)).json();
+        const result = clip.file.serverId ? {id:clip.file.serverId} : await (await call('video',clip.file,signal)).json();
         file = clip.file;
         videoId = result.id;
         return result.id;

@@ -3,6 +3,7 @@ import argparse
 from bisect import bisect_left
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -19,6 +20,8 @@ CACHE = ROOT / "previews"
 TOKEN = secrets.token_urlsafe(32)
 VIDEOS = {}
 JOBS = {}
+CATALOG_MEDIA = {}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"}
 FFMPEG = None
 TEMP = None
 ID = re.compile(r"[a-f0-9]{64}")
@@ -143,6 +146,16 @@ class Handler(SimpleHTTPRequestHandler):
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self.send_error(403)
             return self.reply(f"globalThis.trackLabToken={json.dumps(TOKEN)};".encode(),mime="application/javascript")
+        if self.path.startswith("/media/"):
+            file = CATALOG_MEDIA.get(self.path.removeprefix("/media/"))
+            if not file or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self.send_error(404)
+            try:
+                return self.stream_catalog_media(file)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except FileNotFoundError:
+                return self.send_error(404)
         if not self.path.startswith("/api/"):
             return super().do_GET()
         if not self.authorized():
@@ -158,6 +171,91 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.reply(image.read_bytes(),mime="image/jpeg",
                                   headers={"X-Preview-PTS-Us":image.stem})
         self.send_error(404)
+
+    def catalog_path(self, root, relative):
+        root = Path(root)
+        path = Path(relative)
+        if not root.is_absolute() or path.is_absolute() or path.drive or ".." in path.parts:
+            raise ValueError("請設定專案完整路徑與專案內的相對路徑")
+        root = root.resolve(strict=True)
+        resolved = (root / path).resolve(strict=True)
+        if not resolved.is_relative_to(root):
+            raise ValueError("檔案超出專案資料夾")
+        return resolved
+
+    def catalog_open(self, data):
+        folder = self.catalog_path(data["root"], data["folder"])
+        file = self.catalog_path(folder, data["path"])
+        if not file.is_file() or file.suffix.lower() not in VIDEO_SUFFIXES:
+            raise ValueError("找不到可開啟的影片")
+        stat = file.stat()
+        identity = hashlib.sha256(f"{file}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()
+        VIDEOS[identity] = file
+        capability = secrets.token_urlsafe(32)
+        CATALOG_MEDIA.clear()
+        CATALOG_MEDIA[capability] = file
+        self.reply({"id": identity, "url": f"/media/{capability}",
+                    "size": stat.st_size, "modified": stat.st_mtime_ns // 1_000_000})
+
+    def catalog_probe(self, data):
+        folder = self.catalog_path(data["root"], data["folder"])
+        file = self.catalog_path(folder, data["path"])
+        if not file.is_file() or file.suffix.lower() not in VIDEO_SUFFIXES:
+            raise ValueError("找不到可核對的影片")
+        bundled = ROOT / "bin" / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        probe = str(bundled) if bundled.is_file() else shutil.which("ffprobe")
+        if not probe:
+            raise ValueError("找不到 ffprobe。請放入 bin 或加入 PATH。")
+        try:
+            result = subprocess.run(
+                [probe, "-v", "error", "-select_streams", "v:0", "-show_frames",
+                 "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(file)],
+                capture_output=True, check=True, timeout=180)
+            frames = json.loads(result.stdout)["frames"]
+            times = [float(frame["best_effort_timestamp_time"]) for frame in frames]
+        except (subprocess.SubprocessError, KeyError, ValueError) as error:
+            raise ValueError("無法取得完整影片 PTS") from error
+        if not times:
+            raise ValueError("影片沒有可核對的影格")
+        self.reply({"pts": times})
+
+    def stream_catalog_media(self, file):
+        with file.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            start, end = 0, size - 1
+            range_value = self.headers.get("Range")
+            if range_value:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_value)
+                if match and match[1]:
+                    start = int(match[1])
+                    if match[2]:
+                        end = min(end, int(match[2]))
+                elif match and match[2]:
+                    start = max(0, size - int(match[2]))
+                else:
+                    start = size
+                if start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+            self.send_response(206 if range_value else 200)
+            self.send_header("Content-Type", mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Content-Length", str(end - start + 1))
+            if range_value:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            stream.seek(start)
+            remaining = end - start + 1
+            while remaining:
+                chunk = stream.read(min(1024**2, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def project_file(self, data):
         root = Path(data["root"])
@@ -225,6 +323,18 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0<size<=512_000:
                 raise ValueError("請求大小不符")
             data = json.loads(self.rfile.read(size))
+            if self.path == "/api/catalog-scan":
+                folder = self.catalog_path(data["root"], data["folder"])
+                if not folder.is_dir():
+                    raise ValueError("影片資料夾不存在")
+                paths = sorted(file.relative_to(folder).as_posix() for file in folder.rglob("*")
+                               if file.suffix.lower() in VIDEO_SUFFIXES and file.is_file()
+                               and file.resolve().is_relative_to(folder))
+                return self.reply({"paths": paths})
+            if self.path == "/api/catalog-probe":
+                return self.catalog_probe(data)
+            if self.path == "/api/catalog-open":
+                return self.catalog_open(data)
             if self.path=="/api/project-file":
                 return self.project_file(data)
             if self.path=="/api/jobs":

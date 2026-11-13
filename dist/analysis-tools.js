@@ -154,15 +154,23 @@ const AnalysisTools = (() => {
 
     function exportFrames(a,b) {
         const clip = VideoPlayback.previewSource();
-        const video = clip?.binding.table || videoSelected();
+        const catalog = VideoCatalog.active();
+        const video = catalog ? VideoCatalog.exportVideo() : clip?.binding.table || videoSelected();
+        if (catalog && !video) {
+            alert('請選擇匯出批次與相機，並先排除同名候選或 PTS 不符的影片。');
+            return {video,frames:[],cancelled:true};
+        }
         if (!video) return {video,frames:[]};
-        const coverage = VideoPlayback.coverage();
+        const coverage = catalog ? VideoCatalog.bounds(video) : VideoPlayback.coverage();
         const frames = video.frames.filter(f=>f.t>=a && f.t<=b &&
             (!coverage || (f.t>=coverage[0] && f.t<=coverage[1])));
-        if (frames.length && coverage && Number.isFinite(a) && Number.isFinite(b) &&
-            (a<coverage[0] || b>coverage[1]) &&
-            !confirm('區間部分超出影片。匯出 '+timeLabel(frames[0].t)+' ～ '+timeLabel(frames.at(-1).t)+'？')) {
-            return {video,frames:[],cancelled:true};
+        const partial = coverage && Number.isFinite(a) && Number.isFinite(b) &&
+            (a<coverage[0] || b>coverage[1]);
+        if (frames.length && (catalog || partial)) {
+            const [first,last] = [frames[0],frames.at(-1)];
+            const details = catalog ? video.mediaFilename+'\n'+video.timingLabel+'\n' : '區間部分超出影片。\n';
+            if (!confirm(details+'UTC '+first.utc+' ～ '+last.utc+'\n匯出 '+frames.length+' 個影格？'))
+                return {video,frames:[],cancelled:true};
         }
         return {video,frames};
     }
@@ -175,13 +183,13 @@ const AnalysisTools = (() => {
     }
 
     function videoName(v,f) {
-        return FusionCore.videoFilename({...v,mediaFilename:VideoPlayback.filename?.(v.id)},f);
+        return FusionCore.videoFilename({...v,mediaFilename:v.mediaFilename||VideoPlayback.filename?.(v.id)},f);
     }
 
     function exportAis() {
         const [a,b] = range(), mmsi = locked || selected;
         if (!mmsi || !valid([a,b])) return alert('請先選取 AIS 目標，並設定有效的匯出起點與終點。');
-        const rows = [['sample_or_frame','utc','mmsi','distance_m','ais_age_s','own_source','own_sog_kn','own_cog_true_deg','heading_true_deg','wind_speed_ms','wind_from_true_deg','target_sog_kn','target_cog_true_deg','sun_azimuth_deg','sun_altitude_deg','camera_relative_heading_deg','horizontal_fov_deg','utc_assignment','video_filename','frame_utc_file','video_id','frame_number','frame_utc','ais_report_utc','ais_position_status','target_name','target_type']];
+        const rows = [['sample_or_frame','utc','mmsi','distance_m','ais_age_s','own_source','own_sog_kn','own_cog_true_deg','heading_true_deg','wind_speed_ms','wind_from_true_deg','target_sog_kn','target_cog_true_deg','sun_azimuth_deg','sun_altitude_deg','camera_relative_heading_deg','horizontal_fov_deg','utc_assignment','video_filename','frame_utc_file','video_id','frame_number','frame_utc','ais_report_utc','ais_position_status','target_name','target_type',...(VideoCatalog.active()?['camera','video_sync_status','frame_utc_original','utc_offset_ms']:[])]];
         const name = aisName(mmsi);
         const add = (s,v,f) => {
             const t = target(mmsi,s);
@@ -189,7 +197,7 @@ const AnalysisTools = (() => {
             if (f) fields[17] = f.assignment;
             rows.push([...fields,v ? videoName(v,f) : '',v?.path,v?.id,f?.frame,f?.utc,
                 t ? new Date((t[9]??utc(s)-t[5])*1000).toISOString() : '',
-                t ? t[10] ? 'held' : 'within_age_limit' : 'missing',name,'ais']);
+                t ? t[10] ? 'held' : 'within_age_limit' : 'missing',name,'ais',...(v?.sourceFile?[v.camera,v.timingLabel,f.originalUtc||f.utc,f.offsetMs||0]:[])]);
         };
         const {video,frames,cancelled} = exportFrames(a,b);
         if (cancelled) return;

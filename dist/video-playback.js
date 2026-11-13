@@ -17,7 +17,7 @@ const VideoPlayback = (() => {
     const node = id => document.getElementById(id);
     const status = message => { node('mediaStatus').textContent = message; };
     const clearPending = () => { clearTimeout(timer); pending = null; };
-    const active = () => Boolean(binding && binding.table === videoSelected());
+    const active = () => Boolean(binding && (VideoCatalog.active() ? frameVideos.includes(binding.table) : binding.table === videoSelected()));
     const toMedia = frame => binding.mediaOrigin + frame.pts - binding.first.pts;
     const inClip = frame => toMedia(frame) >= binding.mediaOrigin - 1e-6 && toMedia(frame) < media.duration;
     function showFrame(frame, force = false) {
@@ -64,13 +64,13 @@ const VideoPlayback = (() => {
         clearPending();
         if (url) status('選擇對應的 frame–UTC 表，確認片段起點後套用。');
     }
-    function open(nextFile) {
+    function open(nextFile, mediaUrl) {
         unbind();
         file = nextFile;
         if (callback != null) media.cancelVideoFrameCallback(callback);
         callback = null;
-        if (url) URL.revokeObjectURL(url);
-        url = file ? URL.createObjectURL(file) : null;
+        if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+        url = mediaUrl || (file ? URL.createObjectURL(file) : null);
         node('mediaName').textContent = file?.name || '本機影片';
         node('videoUnavailable').hidden = Boolean(url);
         if (node('loadVideoEmpty')) node('loadVideoEmpty').hidden = Boolean(url);
@@ -161,8 +161,7 @@ const VideoPlayback = (() => {
             media.play().catch(() => status('影片無法播放，請確認檔案與瀏覽器支援的編碼。'));
         } else media.pause();
     }
-    function bind() {
-        const table = videoSelected();
+    function bind(table = videoSelected(), time) {
         const firstText = node('mediaFirst').value.trim();
         const originText = node('mediaOrigin').value.trim();
         const first = table?.frames.find(frame => frame.frame === Number(firstText));
@@ -181,10 +180,10 @@ const VideoPlayback = (() => {
         node('speed').value = String(media.playbackRate);
         node('videoSettings').close?.();
         const start = table.frames.find(frame => AnalysisTools.inside(frame.t) && inClip(frame));
-        if (start) seekUtc(start.t);
+        if (start) seekUtc(Number.isFinite(time) ? time : start.t);
         return true;
     }
-    async function restoreProjectFile(nextFile, saved) {
+    async function restoreProjectFile(nextFile, saved, mediaUrl, time) {
         await new Promise((resolve,reject) => {
             const events = new AbortController();
             const timer = setTimeout(() => finish(Error('影片資訊讀取逾時')),15000);
@@ -196,15 +195,15 @@ const VideoPlayback = (() => {
             }
             media.addEventListener('loadedmetadata',()=>finish(),{signal:events.signal});
             media.addEventListener('error',()=>finish(Error('無法讀取影片')),{signal:events.signal});
-            open(nextFile);
+            open(nextFile,mediaUrl);
         });
         if (!saved.tableId) return;
         if (!frameVideos.some(table=>table.id===saved.tableId)) throw Error('找不到影片的 frame–UTC 配對表');
-        selectedVideo = saved.tableId;
-        fillVideos();
+        const table = frameVideos.find(clip=>clip.id===saved.tableId);
+        if (!mediaUrl) { selectedVideo = saved.tableId; fillVideos(); }
         node('mediaFirst').value = saved.first;
         node('mediaOrigin').value = saved.origin;
-        if (!bind()) throw Error('影片已讀取，但找不到有效的 frame–UTC 綁定');
+        if (!bind(table,time)) throw Error('影片已讀取，但找不到有效的 frame–UTC 綁定');
     }
 
     function setup() {
@@ -212,7 +211,7 @@ const VideoPlayback = (() => {
         if (node('loadVideoEmpty')) node('loadVideoEmpty').onclick = () => node('openVideoSettings').click();
         node('mediaFile').onchange = event => { open(event.target.files[0]); node('projectVideoPath').value = ''; event.target.value = ''; };
         node('mediaClose').onclick = () => open(null);
-        node('mediaBind').onclick = bind;
+        node('mediaBind').onclick = () => bind();
         node('mediaPlay').onclick = toggle;
         node('mediaPrev').onclick = () => step(-1);
         node('mediaNext').onclick = () => step(1);
@@ -269,7 +268,7 @@ const VideoPlayback = (() => {
     }
 
     return {
-        setup, active, unbind, seek, seekUtc, toggle, beginMapSeek,
+        setup, active, unbind, close:()=>{if(media)open(null)}, seek, seekUtc, toggle, beginMapSeek,
         coverage, fillTables, setRate, previewSource, pauseForPreview, restoreProjectFile,
         projectFile:()=>file ? {file,tableId:binding?.table.id,first:binding?.first.frame,origin:binding?.mediaOrigin} : null,
         filename: id => active() && binding.table.id === id ? node('mediaName').textContent : '',
