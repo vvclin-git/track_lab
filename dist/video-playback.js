@@ -13,7 +13,7 @@ function matchMediaFrame(frames, pts) {
 }
 
 const VideoPlayback = (() => {
-    let media, url, file, binding, confirmed, pending, timer, callback, lastMap = -Infinity, dragging = false, mapDragging = false, outside = false;
+    let media, url, file, binding, confirmed, lastConfirmed, pending, timer, callback, lastMap = -Infinity, dragging = false, mapDragging = false, outside = false;
     const node = id => document.getElementById(id);
     const status = message => { node('mediaStatus').textContent = message; };
     const clearPending = () => { clearTimeout(timer); pending = null; };
@@ -42,7 +42,7 @@ const VideoPlayback = (() => {
                 if (!pending) status('目前畫面的 PTS 在配對表中找不到對應影格。');
                 return;
             }
-            confirmed = frame;
+            confirmed = lastConfirmed = frame;
             const requested = pending;
             clearPending();
             if (requested && requested.frame !== frame) {
@@ -58,7 +58,7 @@ const VideoPlayback = (() => {
         if (!media) return;
         globalThis.FramePreview?.reset();
         media.pause();
-        binding = confirmed = null;
+        binding = confirmed = lastConfirmed = null;
         outside = false;
         mapDragging = false;
         clearPending();
@@ -179,8 +179,8 @@ const VideoPlayback = (() => {
         binding = {table, first, mediaOrigin};
         node('speed').value = String(media.playbackRate);
         node('videoSettings').close?.();
-        const start = table.frames.find(frame => AnalysisTools.inside(frame.t) && inClip(frame));
-        if (start) seekUtc(Number.isFinite(time) ? time : start.t);
+        const view = coverage();
+        if (view) SharedTimeline.seekUtc(Number.isFinite(time) ? time : view[0]);
         return true;
     }
     async function restoreProjectFile(nextFile, saved, mediaUrl, time) {
@@ -210,7 +210,13 @@ const VideoPlayback = (() => {
         media = node('localVideo');
         if (node('loadVideoEmpty')) node('loadVideoEmpty').onclick = () => node('openVideoSettings').click();
         node('mediaFile').onchange = event => { open(event.target.files[0]); node('projectVideoPath').value = ''; event.target.value = ''; };
-        node('mediaClose').onclick = () => open(null);
+        const returnToOverview = () => {
+            const time = SharedTimeline.current();
+            open(null);
+            SharedTimeline.seekUtc(time);
+        };
+        node('mediaClose').onclick = returnToOverview;
+        node('returnVideoOverview').onclick = returnToOverview;
         node('mediaBind').onclick = () => bind();
         node('mediaPlay').onclick = toggle;
         node('mediaPrev').onclick = () => step(-1);
@@ -234,6 +240,15 @@ const VideoPlayback = (() => {
             }
             node('mediaPlay').textContent = '暫停影片';
             observe();
+        };
+        media.onended = () => {
+            if (!active()) return;
+            if (lastConfirmed) {
+                const finalFrame = lastConfirmed;
+                seek(finalFrame);
+                showFrame(finalFrame,true);
+            }
+            status(lastConfirmed ? `播放結束 · frame ${lastConfirmed.frame} · ${lastConfirmed.utc}` : '播放結束 · 無已確認的影格');
         };
         media.onpause = () => {
             node('mediaPlay').textContent = '播放影片';

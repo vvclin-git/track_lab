@@ -1,6 +1,7 @@
 /* A single UTC timeline controls sensor replay and a paired local video. */
 const SharedTimeline = (() => {
     let dragging = false;
+    let coverageKey;
     const node = id => document.getElementById(id);
     function fullBounds() {
         const starts = [], ends = [];
@@ -25,21 +26,26 @@ const SharedTimeline = (() => {
         seek.max = Math.max(0.001, end - start);
         if (!dragging) seek.value = current() - start;
         const band = node('videoCoverage');
-        band.replaceChildren();
         const loaded = VideoPlayback.coverage();
-        const intervals = VideoCatalog.active()
+        node('returnVideoOverview').hidden = !loaded;
+        const intervals = loaded ? [[...loaded,true]] : VideoCatalog.active()
             ? VideoCatalog.clips().map(clip=>[...VideoCatalog.bounds(clip),VideoCatalog.hasFile(clip)])
-            : loaded ? [[...loaded,true]] : [];
-        const length = Math.max(0.001,end-start);
-        for (const [a,b,matched] of intervals) {
-            if (a>end || b<start) continue;
-            const span = document.createElement('span');
-            span.dataset.matched = matched;
-            span.style.left = ((Math.max(a,start)-start)/length*100)+'%';
-            span.style.width = ((Math.min(b,end)-Math.max(a,start))/length*100)+'%';
-            band.append(span);
+            : [];
+        const key = JSON.stringify([start,end,intervals]);
+        if (key !== coverageKey) {
+            coverageKey = key;
+            band.replaceChildren();
+            const length = Math.max(0.001,end-start);
+            for (const [a,b,matched] of intervals) {
+                if (a>end || b<start) continue;
+                const span = document.createElement('span');
+                span.dataset.matched = matched;
+                span.style.left = ((Math.max(a,start)-start)/length*100)+'%';
+                span.style.width = ((Math.min(b,end)-Math.max(a,start))/length*100)+'%';
+                band.append(span);
+            }
+            band.hidden = !band.childElementCount;
         }
-        band.hidden = !band.childElementCount;
         VideoCatalog.render(current());
         AnalysisTools.refreshVideoTrack();
         node('timelineStart').textContent = timeLabel(start);

@@ -1,6 +1,6 @@
 /* Workspace display and analysis exports use independent UTC ranges. */
 const AnalysisTools = (() => {
-    let workspace = null, locked = '', pointLayer, rawFiles = [], ais = {};
+    let workspace = null, locked = '', pointLayer, rawFiles = [], rawAis = [], ais = {};
     const heldShips = new Set();
     const aisRanges = new Map();
     const pinRanges = new Map();
@@ -8,9 +8,24 @@ const AnalysisTools = (() => {
     const pinMode = () => $('chartMode').value === 'pinDistance';
     const rangeState = () => pinMode() ? [pinRanges, selectedPin] : [aisRanges, aisId()];
     const utc = s => s.replayTime ?? Date.parse(s.utc) / 1000;
-    const inside = t => !workspace || t >= workspace[0] && t <= workspace[1];
-    const bounds = full => workspace || full;
-    const samples = () => workspace ? data.filter(s => inside(utc(s))) : data;
+    const displayRange = () => VideoPlayback.coverage() || workspace;
+    const inside = t => {
+        const view = displayRange();
+        return !view || t>=view[0] && t<=view[1];
+    };
+    const bounds = full => displayRange() || full;
+    let sampleData, sampleRange, visibleSamples;
+    function samples() {
+        const view = displayRange();
+        if (!view) return data;
+        const key = view.join(':');
+        if (sampleData!==data || sampleRange!==key) {
+            sampleData = data;
+            sampleRange = key;
+            visibleSamples = data.filter(s=>utc(s)>=view[0] && utc(s)<=view[1]);
+        }
+        return visibleSamples;
+    }
     const range = () => {
         const [ranges,id] = rangeState();
         return ranges.get(id) || [null,null];
@@ -81,7 +96,7 @@ const AnalysisTools = (() => {
 
     let previousCoverage = '';
     function refreshVideoTrack() {
-        const signature = JSON.stringify(videoIntervals());
+        const signature = JSON.stringify([videoIntervals(),VideoPlayback.coverage()]);
         if (signature===previousCoverage) return;
         previousCoverage = signature;
         rebuildTrack();
@@ -255,6 +270,10 @@ const AnalysisTools = (() => {
 
     function jumpEndpoint(time) {
         if (!Number.isFinite(time)) return;
+        if (!inside(time) && VideoPlayback.coverage()) {
+            alert('端點在目前影片之外，請先回到總時間軸。');
+            return;
+        }
         if (!inside(time)) {
             if (!confirm('此端點在工作區外。擴展工作區後跳轉？')) return;
             workspace = [Math.min(workspace[0],time),Math.max(workspace[1],time)];
@@ -264,10 +283,16 @@ const AnalysisTools = (() => {
         SharedTimeline.seekUtc(time);
     }
 
+    const multiVideoExport = () => $('nmeaExportRange').value==='video' &&
+        VideoCatalog.active() && VideoCatalog.clips().length>1;
+
     function nmeaRanges() {
         const mode = $('nmeaExportRange').value;
-        if (mode==='video') return videoIntervals();
-        const selection = mode==='workspace' ? SharedTimeline.bounds() : range();
+        if (mode==='video') {
+            const intervals = videoIntervals();
+            return multiVideoExport() && intervals.length ? [[intervals[0][0],intervals.at(-1)[1]]] : intervals;
+        }
+        const selection = mode==='workspace' ? workspace || SharedTimeline.fullBounds() : range();
         return valid(selection) ? [selection] : [];
     }
     const duration = (a,b) => `${Math.floor((b-a)/60)} 分 ${((b-a)%60).toFixed(3)} 秒`;
@@ -276,65 +301,99 @@ const AnalysisTools = (() => {
         const mode = $('nmeaExportRange').value;
         $('nmeaExportSummary').textContent = intervals.length
             ? mode==='video'
-                ? `${intervals.length} 個影片涵蓋區間，共 ${duration(0,intervals.reduce((sum,[a,b])=>sum+b-a,0))}，略過段間空白。`
+                ? intervals[0].map(timeLabel).join(' ～ ') +
+                    (multiVideoExport() ? '（臺灣時間，含段間空白，匯出 NMEA 與 AIS）' : '（臺灣時間，影片涵蓋範圍）')
                 : intervals[0].map(timeLabel).join(' ～ ') + '（臺灣時間，' + duration(...intervals[0]) + '）'
             : mode==='video' ? '目前沒有影片涵蓋區間。' : '請先在圖表設定有效的匯出起點與終點。';
-        $('exportNmea').disabled = !rawFiles.length || !intervals.length;
+        $('exportNmea').disabled = !(rawFiles.length || multiVideoExport() && rawAis.length) || !intervals.length;
     }
 
     async function exportNmea() {
         const intervals = nmeaRanges();
         const mode = $('nmeaExportRange').value;
         if (!intervals.length) return updateNmeaExport();
-        if (!rawFiles.length) return alert('請先匯入原始 NMEA 並建立回放。');
-        const files = rawFiles;
-        const offset = activeProject.settings?.nmeaOffset || 0;
+        const includeAis = multiVideoExport();
+        const inputs = [{files:rawFiles,type:'nmea',offset:activeProject.settings?.nmeaOffset || 0}];
+        if (includeAis) inputs.push({files:rawAis,type:'ais',offset:activeProject.settings?.aisOffset || 0});
         const status = $('nmeaExportStatus');
         $('exportNmea').disabled = $('nmeaExportRange').disabled = true;
         status.textContent = '正在讀取原始 NMEA…';
         try {
-            const parts = [];
-            let header = '', count = 0;
-            for (const file of files) {
-                const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
-                let pending = '';
-                const addLine = line => {
-                    const clean = line.trim();
-                    const fields = clean.split(',');
-                    if (fields.length !== 4) return;
-                    if (/^(time|timestamp|epoch)/i.test(fields[0])) { header ||= clean; return; }
-                    const t = Number(fields[0]) + offset;
-                    if (!fields[0] || !Number.isFinite(t) || intervalIndex(intervals,t)<0) return;
-                    parts.push(line.replace(/\r$/,'')+'\r\n');
-                    count++;
-                };
-                try {
-                    while (true) {
-                        const {value,done} = await reader.read();
-                        if (done) break;
-                        const lines = (pending+value).split('\n');
-                        pending = lines.pop();
-                        lines.forEach(addLine);
-                    }
-                    addLine(pending);
-                } finally { reader.releaseLock(); }
+            const results = [];
+            for (const {files,type,offset} of inputs) {
+                const parts = [];
+                let header = '', count = 0;
+                for (const file of files) {
+                    const reader = file.stream().pipeThrough(new TextDecoderStream()).getReader();
+                    let pending = '';
+                    const addLine = line => {
+                        const clean = line.trim();
+                        if (type==='ais') {
+                            const tab = clean.indexOf('\t');
+                            if (tab<0) return;
+                            try {
+                                const value = JSON.parse(clean.slice(tab+1)).dataTime;
+                                if (value==null || String(value).trim()==='') return;
+                                const time = Number(value)+offset;
+                                if (Number.isFinite(time) && intervalIndex(intervals,time)>=0) {
+                                    parts.push(line.replace(/\r$/,'')+'\r\n');
+                                    count++;
+                                }
+                            } catch { /* Skip malformed AIS records. */ }
+                            return;
+                        }
+                        const fields = clean.split(',');
+                        if (fields.length !== 4) return;
+                        if (/^(time|timestamp|epoch)/i.test(fields[0])) { header ||= clean; return; }
+                        const t = Number(fields[0]) + offset;
+                        if (!fields[0] || !Number.isFinite(t) || intervalIndex(intervals,t)<0) return;
+                        parts.push(line.replace(/\r$/,'')+'\r\n');
+                        count++;
+                    };
+                    try {
+                        while (true) {
+                            const {value,done} = await reader.read();
+                            if (done) break;
+                            const lines = (pending+value).split('\n');
+                            pending = lines.pop();
+                            lines.forEach(addLine);
+                        }
+                        addLine(pending);
+                    } finally { reader.releaseLock(); }
+                }
+                if (header) parts.unshift(header+'\r\n');
+                const filename = type==='ais' ? 'ais_video_coverage.txt'
+                    : mode==='video' ? 'nmea_video_coverage.csv' : 'nmea_interval.csv';
+                results.push({parts,count,filename,type});
             }
-            if (!count) return status.textContent = '所選區間沒有 NMEA 紀錄。';
-            if (header) parts.unshift(header+'\r\n');
-            download(parts,mode==='video'?'nmea_video_coverage.csv':'nmea_interval.csv');
-            status.textContent = `已匯出 ${count.toLocaleString()} 筆紀錄。`;
+            if (!includeAis) {
+                const {parts,count,filename} = results[0];
+                if (count) download(parts,filename);
+                status.textContent = count ? `已匯出 ${count.toLocaleString()} 筆紀錄。` : '所選區間沒有 NMEA 紀錄。';
+                return;
+            }
+            status.replaceChildren();
+            for (const {parts,count,filename,type} of results) {
+                if (status.childNodes.length) status.append(' · ');
+                if (!count) { status.append(type.toUpperCase()+' 無紀錄'); continue; }
+                const button = document.createElement('button');
+                button.textContent = `下載 ${type.toUpperCase()}（${count.toLocaleString()} 筆）`;
+                button.onclick = () => download(parts,filename);
+                status.append(button);
+            }
         } catch (e) {
             status.textContent = 'NMEA 匯出失敗：'+e.message;
         } finally { $('nmeaExportRange').disabled = false; updateNmeaExport(); }
     }
 
-    function reset(files = [], reports = {}) {
+    function reset(files = [], reports = {}, aisFiles = []) {
         workspace = null;
         locked = '';
         heldShips.clear();
         aisRanges.clear();
         pinRanges.clear();
         rawFiles = files;
+        rawAis = aisFiles;
         ais = reports;
         $('holdAis').checked = false;
         $('workspaceLabel').textContent = '全程';
@@ -420,7 +479,7 @@ const AnalysisTools = (() => {
             updateNmeaExport();
             $('nmeaExportDialog').showModal();
         };
-        $('nmeaExportRange').onchange = updateNmeaExport;
+        $('nmeaExportRange').onchange = () => { $('nmeaExportStatus').replaceChildren(); updateNmeaExport(); };
         $('exportNmea').onclick = exportNmea;
         for (const [id,forward] of [['previousTrackPoint',false],['nextTrackPoint',true]]) {
             $(id).onclick = () => {
