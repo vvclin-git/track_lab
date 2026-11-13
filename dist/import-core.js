@@ -26,10 +26,21 @@ function previous(rows,t,maxAge){if(!rows?.length)return null;let i=idx(rows,t);
 function position(rows,t,maxGap=2){return Fusion.position(rows,t,maxGap)}
 function distance(a,b){return Fusion.distance(a,b)}
 function merged(entries){let map=new Map(),dups=0,conflicts=0;for(let e of entries)for(let [key,rows]of e.streams){if(!map.has(key))map.set(key,[]);for(let r of rows)map.get(key).push(r)}for(let [k,rows]of map){rows.sort((a,b)=>a[0]-b[0]);let result=[];for(let row of rows){let prev=result[result.length-1];if(prev&&prev[0]===row[0]){if(JSON.stringify(prev[1])===JSON.stringify(row[1]))dups++;else conflicts++;continue}result.push(row)}map.set(k,result)}return {map,dups,conflicts}}
-function build(entries,settings){let shifted=entries.filter(e=>e.streams).map(e=>({streams:e.streams.map(([k,rows])=>[k,rows.map(([t,v])=>[t+(k.startsWith('ais:')?settings.aisOffset:settings.nmeaOffset),v])])})),{map,dups,conflicts}=merged(shifted),sources=[...map.keys()].filter(k=>k.startsWith('129025:')).map(k=>k.split(':')[1]);if(!sources.length)throw Error('沒有可用的 PGN129025 本船定位。尚未支援以129029 fast-packet取代。');
- let posRows=sources.map(s=>map.get('129025:'+s)).flat().filter(r=>r[1]);let start=Infinity,end=-Infinity;for(let r of posRows){start=Math.min(start,r[0]);end=Math.max(end,r[0])}if(!Number.isFinite(start)||end<start)throw Error('沒有有效本船位置');let step=Math.max(settings.step,Math.ceil((end-start)/9999));let times=[];for(let t=start;t<end;t+=step)times.push(t);times.push(end);let targets=[...map.keys()].filter(k=>k.startsWith('ais:')),data=[];let truncated=0;
+function build(entries,settings,exportIntervals){let shifted=entries.filter(e=>e.streams).map(e=>({streams:e.streams.map(([k,rows])=>[k,rows.map(([t,v])=>[t+(k.startsWith('ais:')?settings.aisOffset:settings.nmeaOffset),v])])})),{map,dups,conflicts}=merged(shifted),sources=[...map.keys()].filter(k=>k.startsWith('129025:')).map(k=>k.split(':')[1]);if(!sources.length)throw Error('沒有可用的 PGN129025 本船定位。尚未支援以129029 fast-packet取代。');
+ let posRows=sources.map(s=>map.get('129025:'+s)).flat().filter(r=>r[1]);let start=Infinity,end=-Infinity;for(let r of posRows){start=Math.min(start,r[0]);end=Math.max(end,r[0])}if(!Number.isFinite(start)||end<start)throw Error('沒有有效本船位置');const step=exportIntervals ? settings.step : Math.max(settings.step,Math.ceil((end-start)/9999));
+ const times=[];
+ for(const [rangeStart,rangeEnd] of exportIntervals || [[start,end]]){
+  const first=Math.max(start,rangeStart), last=Math.min(end,rangeEnd);
+  if(first>last)continue;
+  if(exportIntervals){
+   for(let i=0;first+i*step<=last;i++)times.push(first+i*step);
+  }else{
+   for(let t=first;t<last;t+=step)times.push(t);
+   times.push(last);
+  }
+ }let targets=[...map.keys()].filter(k=>k.startsWith('ais:')),data=[];let truncated=0;
  const at=(p,src,t,age=2,ref)=>previous(map.get(p+':'+src+(ref===undefined?'':':'+ref)),t,age);
- for(let i=0;i<times.length;i++){let t=times[i],s={frame:null,pts:t-start,utc:new Date(t*1000).toISOString(),sources:{},targets:[],quality:{assignment:'sensor',pts_estimated:false,nmea_offset:settings.nmeaOffset,ais_offset:settings.aisOffset},clock:{}};
+ for(let i=0;i<times.length;i++){let t=times[i],s={frame:null,pts:t-start,utc:new Date(exportIntervals ? Math.round(t*1000) : t*1000).toISOString(),...(exportIntervals ? {replayTime:t} : {}),sources:{},targets:[],quality:{assignment:'sensor',pts_estimated:false,nmea_offset:settings.nmeaOffset,ais_offset:settings.aisOffset},clock:{}};
   for(let src of sources){let rows=map.get('129025:'+src),pos=position(rows,t,settings.ownGap);if(pos&&i>0){let a=Math.max(1,idx(rows,times[i-1])+1),b=idx(rows,t);for(let j=a;j<=b;j++)if(!rows[j][1]||!rows[j-1][1]||rows[j][0]-rows[j-1][0]>settings.ownGap){pos.breakBefore=true;break}}let motion=at(129026,src,t);if(motion&&motion.ref===1&&num(motion.cog)){let v=at(127258,src,t,30);motion.cog=v&&num(v.variation)?(motion.cog+v.variation+360)%360:null;if(motion.cog!==null)motion.ref=0}s.sources[src]={position:pos,motion};s.clock[src]=at(126992,src,t,3)}
   let ref=s.sources[settings.source]?.position||sources.map(src=>s.sources[src].position).find(Boolean);s.lat=ref?.lat??null;s.lon=ref?.lon??null;
   let h=at(127250,settings.headingSource,t),v=at(127258,settings.headingSource,t,30);if(h){let variation=h.variation??v?.variation??null;h.true_heading=num(h.heading)&&(h.ref===0||h.ref===1&&num(variation))?(h.heading+(h.ref===1?variation:0)+360)%360:null;h.variation_used=variation;h.source=settings.headingSource}s.heading=h;s.variation=v;s.wind=at(130306,settings.windSource,t,5,0);s.apparentWind=at(130306,settings.windSource,t,5,2);

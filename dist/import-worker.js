@@ -1,6 +1,6 @@
 /* Parsing and geodesic fusion stay in a browser-local worker. */
 self.window=self;
-importScripts('vendor/geographiclib-geodesic.min.js','fusion-core.js?v=10','import-core.js?v=9','file-fingerprint.js');
+importScripts('vendor/geographiclib-geodesic.min.js','fusion-core.js?v=10','import-core.js?v=10','file-fingerprint.js');
 let entries=[];
 function videos(){return entries.filter(e=>e.type==='frames').flatMap(e=>{if(e.clips)return [...e.clips.values()].map(clip=>({...clip,id:e.fingerprint+':'+clip.sourceFile,path:e.name,label:clip.sourceFile,errors:e.errors}));let folder=e.name.replace(/[^/]+$/,''),model=entries.filter(x=>x.type==='frames'&&x.name.replace(/[^/]+$/,'')===folder).length===1&&entries.find(m=>m.type==='model'&&m.name.replace(/[^/]+$/,'')===folder)?.model;return {id:e.fingerprint,path:e.name,...FusionCore.identity(e.name,e.frames),frames:e.frames,model:model||null,errors:e.errors}})}
 async function readFile(file,id,path){let name=path||file.webkitRelativePath||file.name,fp=await fingerprint(file);if(entries.some(e=>e.fingerprint===fp))return {id,name,size:file.size,status:'duplicate',note:'相同內容指紋，未重複加入'};
@@ -38,4 +38,15 @@ async function readFile(file,id,path){let name=path||file.webkitRelativePath||fi
  try{while(true){let {value,done}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});let parts=pending.split('\n');pending=parts.pop();for(let s of parts)line(s);if(count%1000<200)postMessage({type:'progress',text:`${file.name}：已讀 ${count.toLocaleString()} 列`})}pending+=decoder.decode();if(pending)line(pending)}finally{reader.releaseLock()}
  if(min===null)throw Error('檔案沒有有效時間資料');let summary={id,name,size:file.size,type,rows:count,valid,errors,samples,start:min,end:max,backward,largeGaps,maxGap,sources:[...sources],pgns:[...pgs],ignored,fingerprint:fp,status:valid?'ok':'empty',note:valid?'':'無本版支援的工程量'};if(valid)entries.push({...summary,...(type==='frames'?{frames,clips}:{streams:[...streams]})});return summary;
 }
-self.onmessage=async e=>{try{if(e.data.action==='parse'){if(e.data.reset)entries=[];let results=[];for(let i=0;i<e.data.files.length;i++){let f=e.data.files[i],id=e.data.ids[i];try{results.push(await readFile(f,id,e.data.paths?.[i]))}catch(err){results.push({id,name:f.webkitRelativePath||f.name,size:f.size,status:'error',note:err.message})}}postMessage({type:'parsed',results})}else if(e.data.action==='remove'){entries=entries.filter(x=>x.id!==e.data.id);postMessage({type:'removed'})}else if(e.data.action==='frames'){postMessage({type:'frames',videos:videos()})}else if(e.data.action==='build'){let r=ImportCore.build(entries,e.data.settings);postMessage({type:'built',...r,videos:videos(),settings:e.data.settings})}else if(e.data.action==='clear'){entries=[];postMessage({type:'cleared'})}}catch(err){postMessage({type:'error',message:err.message})}};
+self.onmessage=async e=>{try{if(e.data.action==='parse'){if(e.data.reset)entries=[];let results=[];for(let i=0;i<e.data.files.length;i++){let f=e.data.files[i],id=e.data.ids[i];try{results.push(await readFile(f,id,e.data.paths?.[i]))}catch(err){results.push({id,name:f.webkitRelativePath||f.name,size:f.size,status:'error',note:err.message})}}postMessage({type:'parsed',results})}else if(e.data.action==='remove'){entries=entries.filter(x=>x.id!==e.data.id);postMessage({type:'removed'})}else if(e.data.action==='frames'){postMessage({type:'frames',videos:videos()})}else if(e.data.action==='build'){let r=ImportCore.build(entries,e.data.settings);postMessage({type:'built',...r,videos:videos(),settings:e.data.settings})}else if(e.data.action==='exportSensors'){
+ const {files,settings,intervals}=e.data;
+ entries=[];
+ try{
+  for(const [id,file] of files.entries()){
+   const result=await readFile(file,id);
+   if(result.status!=='ok'&&result.status!=='duplicate')throw Error(file.name+'：'+result.note);
+  }
+  const {data}=ImportCore.build(entries,settings,intervals);
+  postMessage({type:'exportedSensors',data});
+ }finally{entries=[]}
+}else if(e.data.action==='clear'){entries=[];postMessage({type:'cleared'})}}catch(err){postMessage({type:'error',message:err.message})}};
