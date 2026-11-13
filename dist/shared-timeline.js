@@ -48,8 +48,9 @@ const SharedTimeline = (() => {
         }
         VideoCatalog.render(current());
         AnalysisTools.refreshVideoTrack();
-        node('timelineStart').textContent = timeLabel(start);
-        node('timelineEnd').textContent = timeLabel(end);
+        const workspace = AnalysisTools.workspace();
+        node('timelineStart').textContent = (workspace?.[0]===start?'工作區起點 · ':'')+timeLabel(start);
+        node('timelineEnd').textContent = (workspace?.[1]===end?'工作區終點 · ':'')+timeLabel(end);
     }
     function seekUtc(time, {syncVideo = true} = {}) {
         if (!data.length) return;

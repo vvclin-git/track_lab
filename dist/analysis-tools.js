@@ -1,14 +1,17 @@
-/* Workspace display and analysis exports use independent UTC ranges. */
+/* Workspace and chart exports share a UTC range. */
 const AnalysisTools = (() => {
     let workspace = null, locked = '', pointLayer, rawFiles = [], rawAis = [], ais = {};
     const heldShips = new Set();
-    const aisRanges = new Map();
-    const pinRanges = new Map();
+    let draft = null;
     const aisId = () => locked || selected;
     const pinMode = () => $('chartMode').value === 'pinDistance';
-    const rangeState = () => pinMode() ? [pinRanges, selectedPin] : [aisRanges, aisId()];
     const utc = s => s.replayTime ?? Date.parse(s.utc) / 1000;
-    const displayRange = () => VideoPlayback.coverage() || workspace;
+    const displayRange = () => {
+        const clip = VideoPlayback.coverage();
+        if (!workspace || !clip) return workspace || clip;
+        const overlap = [Math.max(workspace[0],clip[0]),Math.min(workspace[1],clip[1])];
+        return valid(overlap) ? overlap : workspace;
+    };
     const inside = t => {
         const view = displayRange();
         return !view || t>=view[0] && t<=view[1];
@@ -26,10 +29,7 @@ const AnalysisTools = (() => {
         }
         return visibleSamples;
     }
-    const range = () => {
-        const [ranges,id] = rangeState();
-        return ranges.get(id) || [null,null];
-    };
+    const range = () => workspace || [null,null];
     const valid = ([a, b]) => Number.isFinite(a) && Number.isFinite(b) && a <= b;
 
     function download(content, name) {
@@ -42,6 +42,7 @@ const AnalysisTools = (() => {
     }
 
     function refreshWorkspace() {
+        draft = null;
         $('workspaceLabel').textContent = workspace
             ? workspace.map(timeLabel).join(' ～ ') : '全程';
         rebuildTrack();
@@ -258,17 +259,18 @@ const AnalysisTools = (() => {
     }
 
     function renderRange() {
-        const [ranges,id] = rangeState();
-        const [a,b] = ranges.get(id) || [null,null];
+        const id = pinMode() ? selectedPin : aisId();
+        const [a,b] = range();
         const distanceMode = pinMode() || $('chartMode').value === 'distance';
-        for (const key of ['start','end','jumpExportStart','jumpExportEnd','exportDistanceRange']) $(key).hidden = !distanceMode;
-        $('start').disabled = $('end').disabled = !id;
+        $('exportDistanceRange').hidden = !distanceMode;
+        $('start').disabled = $('end').disabled = !data.length;
         $('jumpExportStart').disabled = !Number.isFinite(a);
         $('jumpExportEnd').disabled = !Number.isFinite(b);
         $('exportDistanceRange').disabled = !id || !valid([a,b]);
         $('rangeLabel').textContent = id
             ? `分析／匯出：${pinMode()?pinSelected()?.name:aisName(id)}${!pinMode()&&locked?'（已鎖定）':''} · ${timeLabel(a)} ～ ${timeLabel(b)}`
-            : '尚未選取分析目標';
+            : workspace ? '工作區：'+workspace.map(timeLabel).join(' ～ ') : '尚未設定工作區';
+        if (draft) $('rangeLabel').textContent += ' · 待套用：'+draft.map(timeLabel).join(' ～ ');
     }
 
     function jumpEndpoint(time) {
@@ -393,8 +395,7 @@ const AnalysisTools = (() => {
         workspace = null;
         locked = '';
         heldShips.clear();
-        aisRanges.clear();
-        pinRanges.clear();
+        draft = null;
         rawFiles = files;
         rawAis = aisFiles;
         ais = reports;
@@ -425,9 +426,9 @@ const AnalysisTools = (() => {
             showDuration();
         };
         $('workspaceOpen').onclick = () => {
-            const [a,b] = SharedTimeline.bounds();
-            $('workspaceStart').value = local(a);
-            $('workspaceEnd').value = local(b);
+            const [a,b] = draft || workspace || SharedTimeline.bounds();
+            $('workspaceStart').value = Number.isFinite(a)?local(a):'';
+            $('workspaceEnd').value = Number.isFinite(b)?local(b):'';
             showDuration();
             $('workspaceDialog').showModal();
         };
@@ -463,12 +464,12 @@ const AnalysisTools = (() => {
         };
         for (const [i,key] of ['start','end'].entries()) {
             $(key).onclick = () => {
-                const [ranges,id] = rangeState();
-                if (!id) return;
-                const times = [...range()];
-                times[i] = SharedTimeline.current();
-                ranges.set(id,times);
-                render();
+                draft ||= [...range()];
+                draft[i] = SharedTimeline.current();
+                if (valid(draft) && draft[0]<draft[1]) {
+                    workspace = draft;
+                    refreshWorkspace();
+                } else render();
             };
         }
         $('jumpExportStart').onclick = () => jumpEndpoint(range()[0]);
@@ -511,7 +512,7 @@ const AnalysisTools = (() => {
             map?.panTo([lat,lon]);
         };
     }
-    return {setup,reset,videoIntervals,intervalIndex,refreshVideoTrack,drawExportRange,inside,bounds,samples,points,pointTimes,exportFrames,distanceFilename,videoName,range,renderRange,visibleTargets,download,exportAis,target,renderLock,
+    return {setup,reset,workspace:()=>workspace,videoIntervals,intervalIndex,refreshVideoTrack,drawExportRange,inside,bounds,samples,points,pointTimes,exportFrames,distanceFilename,videoName,range,renderRange,visibleTargets,download,exportAis,target,renderLock,
         locked:()=>locked,
         settings:()=>({locked,heldShips:[...heldShips]}),
         restore(settings) {

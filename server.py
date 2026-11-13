@@ -32,8 +32,8 @@ def cached_preview(output, target):
     return next((output / str(target)).glob("*.jpg"), None)
 
 
-def make_previews(job, video, requests, tolerance):
-    output = CACHE / video.name / str(tolerance)
+def make_previews(job, video, video_id, requests, tolerance):
+    output = CACHE / video_id / str(tolerance)
     output.mkdir(parents=True, exist_ok=True)
     pending = []
     matches = {}
@@ -108,9 +108,9 @@ def make_previews(job, video, requests, tolerance):
         job["diagnostics"] = {"exitCode":code,"lastMessages":diagnostics,"matchedPtsUs":observed}
 
 
-def run_job(job, video, requests, tolerance):
+def run_job(job, video, video_id, requests, tolerance):
     try:
-        make_previews(job,video,requests,tolerance)
+        make_previews(job,video,video_id,requests,tolerance)
     except Exception as error:
         job["error"] = str(error)
     finally:
@@ -350,7 +350,7 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("預覽容許誤差須為 1–250 ms")
                 identity = secrets.token_hex(16)
                 job = JOBS[identity] = {"done":False,"stop":False,"processed":0}
-                threading.Thread(target=run_job,args=(job,video,sorted(set(targets)),tolerance),daemon=True).start()
+                threading.Thread(target=run_job,args=(job,video,data["video"],sorted(set(targets)),tolerance),daemon=True).start()
                 return self.reply({"id":identity})
             if self.path=="/api/cancel" and data["id"] in JOBS:
                 job = JOBS[data["id"]]
