@@ -14,9 +14,10 @@ const LocalFFmpeg = (() => {
     }
 
     async function image(clip,frame,toleranceUs) {
-        if (!globalThis.trackLabToken || file !== clip.file || !videoId) return null;
+        const id = clip.file.serverId || (file === clip.file ? videoId : null);
+        if (!globalThis.trackLabToken || !id) return null;
         const target = timestamp(clip,frame);
-        const response = await fetch(`/api/image/${videoId}/${toleranceUs}/${target}`,{headers:token});
+        const response = await fetch(`/api/image/${id}/${toleranceUs}/${target}`,{headers:token});
         if (!response.ok) return null;
         return {blob:await response.blob(), deltaUs:Number(response.headers.get('X-Preview-PTS-Us'))-target};
     }

@@ -112,6 +112,12 @@ const AnalysisTools = (() => {
         return times;
     }
 
+    function trackPointStep() {
+        const [start,end] = SharedTimeline.bounds();
+        const budget = map?.getZoom() >= 17 ? 10000 : 1200;
+        return 5 * Math.max(1,Math.ceil((end-start)/(budget*5)));
+    }
+
     function points() {
         if (!map) return;
         if (!pointLayer) {
@@ -121,10 +127,7 @@ const AnalysisTools = (() => {
         pointLayer.clearLayers();
         for (const id of ['previousTrackPoint','nextTrackPoint']) $(id).disabled = !$('trackPoints').checked;
         if (!$('trackPoints').checked) return;
-        const [start, end] = SharedTimeline.bounds();
-        const defaultStep = 5;
-        const pointBudget = map.getZoom() >= 17 ? 10000 : 1200;
-        const step = defaultStep * Math.max(1, Math.ceil((end - start) / (pointBudget * defaultStep)));
+        const step = trackPointStep();
         const intervals = videoIntervals();
         for (const t of pointTimes(step,$('trackVideoOnly').checked ? intervals : null)) {
             const p = FusionCore.position(framePositionRows(), t, analysisGap());
@@ -484,7 +487,7 @@ const AnalysisTools = (() => {
         for (const [id,forward] of [['previousTrackPoint',false],['nextTrackPoint',true]]) {
             $(id).onclick = () => {
                 const now = SharedTimeline.current();
-                const times = pointTimes(5,$('trackVideoOnly').checked ? videoIntervals() : null);
+                const times = pointTimes(trackPointStep(),$('trackVideoOnly').checked ? videoIntervals() : null);
                 const time = forward ? times.find(t=>t>now+.05) : times.findLast(t=>t<now-.05);
                 if (time !== undefined) FramePreview.show(time);
             };

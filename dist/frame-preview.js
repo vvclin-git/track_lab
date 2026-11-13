@@ -49,13 +49,18 @@ globalThis.FramePreview = (() => {
         const token = request;
         const clip = VideoPlayback.previewSource();
         const frame = clip?.frameAt(time);
-        if (!frame) { SharedTimeline.seekUtc(time); return; }
+        if (!frame) { SharedTimeline.seekUtc(time, {syncVideo:false}); return; }
         SharedTimeline.seekUtc(time, {syncVideo:false});
         const local = globalThis.trackLabToken && await LocalFFmpeg.image(
             clip,frame,node('previewTolerance').valueAsNumber*1000).catch(()=>null);
         const blob = globalThis.trackLabToken ? local?.blob : await cached(key(clip,frame));
         if (token !== request || VideoPlayback.previewSource()?.binding !== clip.binding) return;
-        if (!blob) { SharedTimeline.seekUtc(time); return; }
+        if (!blob) {
+            node('previewCaption').textContent = `${clip.name} · frame ${frame.frame} · 無快取預覽，請建立航跡預覽或跳至影片。`;
+            node('framePreview').hidden = false;
+            shown = frame;
+            return;
+        }
         shown = frame;
         imageUrl = URL.createObjectURL(blob);
         node('previewImage').src = imageUrl;
