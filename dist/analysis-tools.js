@@ -307,21 +307,63 @@ const AnalysisTools = (() => {
         $('nmeaExportSummary').textContent = intervals.length
             ? mode==='video'
                 ? intervals[0].map(timeLabel).join(' ～ ') +
-                    (multiVideoExport() ? '（臺灣時間，含段間空白，匯出 NMEA 與 AIS）' : '（臺灣時間，影片涵蓋範圍）')
+                    (multiVideoExport() ? '（臺灣時間，含段間空白）' : '（臺灣時間，影片涵蓋範圍）')
                 : intervals[0].map(timeLabel).join(' ～ ') + '（臺灣時間，' + duration(...intervals[0]) + '）'
             : mode==='video' ? '目前沒有影片涵蓋區間。' : '請先在圖表設定有效的匯出起點與終點。';
-        $('exportNmea').disabled = !(rawFiles.length || multiVideoExport() && rawAis.length) || !intervals.length;
+        const decoded = $('nmeaExportFormat').value === 'decoded';
+        const available = decoded ? data.some(sample=>intervalIndex(intervals,utc(sample))>=0)
+            : rawFiles.length || multiVideoExport() && rawAis.length;
+        if (decoded && intervals.length) $('nmeaExportSummary').textContent += available
+            ? ' · 依目前回放取樣間隔匯出' : ' · 區間內沒有回放取樣點';
+        $('exportNmea').disabled = !available || !intervals.length;
+    }
+
+    function exportDecodedSensors(intervals) {
+        const columns = new Set(['utc','utc_epoch_s']);
+        const rows = [];
+        function addFields(row, prefix, fields) {
+            for (const [name,value] of Object.entries(fields || {})) {
+                const key = prefix + '_' + name;
+                columns.add(key);
+                row[key] = value;
+            }
+        }
+        for (const sample of data) {
+            const time = utc(sample);
+            if (intervalIndex(intervals,time)<0) continue;
+            const row = {utc:sample.utc,utc_epoch_s:time};
+            for (const [source,values] of Object.entries(sample.sources || {})) {
+                addFields(row,'source_'+source+'_position',values.position);
+                addFields(row,'source_'+source+'_motion',values.motion);
+            }
+            for (const [source,clock] of Object.entries(sample.clock || {}))
+                addFields(row,'source_'+source+'_clock',clock);
+            for (const section of ['heading','variation','wind','apparentWind'])
+                addFields(row,section,sample[section]);
+            rows.push(row);
+        }
+        const status = $('nmeaExportStatus');
+        if (!rows.length) {
+            status.textContent = '區間內沒有回放取樣點。';
+            return;
+        }
+        const header = [...columns];
+        const csv = [header,...rows.map(row=>header.map(key=>row[key]))]
+            .map(row=>row.map(FusionCore.csvCell).join(',')).join('\r\n');
+        download(['\ufeff',csv],'decoded_sensor_data.csv');
+        status.textContent = `已匯出 ${rows.length.toLocaleString()} 筆解碼回放資料。`;
     }
 
     async function exportNmea() {
         const intervals = nmeaRanges();
         const mode = $('nmeaExportRange').value;
         if (!intervals.length) return updateNmeaExport();
+        if ($('nmeaExportFormat').value === 'decoded') return exportDecodedSensors(intervals);
         const includeAis = multiVideoExport();
         const inputs = [{files:rawFiles,type:'nmea',offset:activeProject.settings?.nmeaOffset || 0}];
         if (includeAis) inputs.push({files:rawAis,type:'ais',offset:activeProject.settings?.aisOffset || 0});
         const status = $('nmeaExportStatus');
-        $('exportNmea').disabled = $('nmeaExportRange').disabled = true;
+        $('exportNmea').disabled = $('nmeaExportRange').disabled = $('nmeaExportFormat').disabled = true;
         status.textContent = '正在讀取原始 NMEA…';
         try {
             const results = [];
@@ -388,7 +430,7 @@ const AnalysisTools = (() => {
             }
         } catch (e) {
             status.textContent = 'NMEA 匯出失敗：'+e.message;
-        } finally { $('nmeaExportRange').disabled = false; updateNmeaExport(); }
+        } finally { $('nmeaExportRange').disabled = $('nmeaExportFormat').disabled = false; updateNmeaExport(); }
     }
 
     function reset(files = [], reports = {}, aisFiles = []) {
@@ -483,7 +525,7 @@ const AnalysisTools = (() => {
             updateNmeaExport();
             $('nmeaExportDialog').showModal();
         };
-        $('nmeaExportRange').onchange = () => { $('nmeaExportStatus').replaceChildren(); updateNmeaExport(); };
+        $('nmeaExportRange').onchange = $('nmeaExportFormat').onchange = () => { $('nmeaExportStatus').replaceChildren(); updateNmeaExport(); };
         $('exportNmea').onclick = exportNmea;
         for (const [id,forward] of [['previousTrackPoint',false],['nextTrackPoint',true]]) {
             $(id).onclick = () => {
