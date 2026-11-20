@@ -140,7 +140,7 @@ const VideoCatalog = (() => {
         } catch (error) { if (token===generation) alert(error.message); }
     }
 
-    async function open(clip,path) {
+    async function open(clip,path,camera) {
         if (loading) return;
         loading = true;
         const token = generation;
@@ -153,7 +153,11 @@ const VideoCatalog = (() => {
             const file = {name:path.split('/').at(-1),size:result.size,lastModified:result.modified,serverId:result.id};
             if (token!==generation) return;
             await VideoPlayback.restoreProjectFile(file,{tableId:clip.id,first:clip.frames[0].frame,origin:0},result.url,time);
-            if (token===generation) SharedTimeline.update();
+            if (token!==generation) return;
+            node('catalogExportCamera').value = camera;
+            const tableSelect = node('videoSelect');
+            tableSelect.value = clip.id;
+            tableSelect.onchange();
         } catch (error) { alert(error.message); }
         finally { loading = false; }
     }
@@ -202,7 +206,7 @@ const VideoCatalog = (() => {
                     ? '載入 '+camera+(checked===true?'（PTS 相符）':checked===false?'（PTS 不符）':'（待核對）')
                     : camera+(candidates.length?' 有多個候選':' 缺檔');
                 button.disabled = candidates.length!==1 || checked===false;
-                button.onclick = ()=>open(clip,candidates[0]);
+                button.onclick = ()=>open(clip,candidates[0],camera);
                 row.append(button);
                 if (candidates.length===1 && checked===undefined) {
                     const verifyButton = document.createElement('button');
