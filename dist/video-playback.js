@@ -161,7 +161,7 @@ const VideoPlayback = (() => {
             media.play().catch(() => status('影片無法播放，請確認檔案與瀏覽器支援的編碼。'));
         } else media.pause();
     }
-    function bind(table = VideoCatalog.matchTable(file?.name) || videoSelected(), time) {
+    function bind(table = videoSelected(), time) {
         const firstText = node('mediaFirst').value.trim();
         const originText = node('mediaOrigin').value.trim();
         const first = table?.frames.find(frame => frame.frame === Number(firstText));
@@ -210,7 +210,14 @@ const VideoPlayback = (() => {
     function setup() {
         media = node('localVideo');
         if (node('loadVideoEmpty')) node('loadVideoEmpty').onclick = () => node('openVideoSettings').click();
-        node('mediaFile').onchange = event => { open(event.target.files[0]); node('projectVideoPath').value = ''; event.target.value = ''; };
+        node('mediaFile').onchange = event => {
+            const nextFile = event.target.files[0];
+            open(nextFile);
+            node('projectVideoPath').value = '';
+            event.target.value = '';
+            const table = VideoCatalog.matchTable(nextFile?.name);
+            if (table) VideoCatalog.selectBoundVideo(table,nextFile.name);
+        };
         const returnToOverview = () => {
             const time = SharedTimeline.current();
             open(null);
