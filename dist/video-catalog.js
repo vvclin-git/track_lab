@@ -140,7 +140,7 @@ const VideoCatalog = (() => {
         } catch (error) { if (token===generation) alert(error.message); }
     }
 
-    async function open(clip,path,camera) {
+    async function open(clip,path) {
         if (loading) return;
         loading = true;
         const token = generation;
@@ -153,11 +153,6 @@ const VideoCatalog = (() => {
             const file = {name:path.split('/').at(-1),size:result.size,lastModified:result.modified,serverId:result.id};
             if (token!==generation) return;
             await VideoPlayback.restoreProjectFile(file,{tableId:clip.id,first:clip.frames[0].frame,origin:0},result.url,time);
-            if (token!==generation) return;
-            node('catalogExportCamera').value = camera;
-            const tableSelect = node('videoSelect');
-            tableSelect.value = clip.id;
-            tableSelect.onchange();
         } catch (error) { alert(error.message); }
         finally { loading = false; }
     }
@@ -206,7 +201,7 @@ const VideoCatalog = (() => {
                     ? '載入 '+camera+(checked===true?'（PTS 相符）':checked===false?'（PTS 不符）':'（待核對）')
                     : camera+(candidates.length?' 有多個候選':' 缺檔');
                 button.disabled = candidates.length!==1 || checked===false;
-                button.onclick = ()=>open(clip,candidates[0],camera);
+                button.onclick = ()=>open(clip,candidates[0]);
                 row.append(button);
                 if (candidates.length===1 && checked===undefined) {
                     const verifyButton = document.createElement('button');
@@ -219,6 +214,19 @@ const VideoCatalog = (() => {
         }
         const counts = clips().flatMap(clip=>cameras.map(camera=>lookup(clip,camera).length));
         node('catalogStatus').textContent = `${clips().length} 批 · ${counts.filter(n=>n===1).length} 個檔名配對 · ${counts.filter(n=>n===0).length} 缺檔 · ${counts.filter(n=>n>1).length} 多重候選`;
+    }
+
+    function matchTable(name) {
+        const matches = clips().filter(clip=>cameras.some(camera=>key(clip,camera)===name?.toLowerCase()));
+        return matches.length===1 ? matches[0] : null;
+    }
+
+    function selectBoundVideo(clip,name) {
+        const camera = cameras.find(candidate=>key(clip,candidate)===name?.toLowerCase());
+        node('catalogExportCamera').value = camera || '';
+        const select = node('videoSelect');
+        select.value = clip.id;
+        select.onchange();
     }
 
     function exportVideo() {
@@ -249,5 +257,5 @@ const VideoCatalog = (() => {
 
     return {setup,replace,active,clips,bounds,refreshOptions,render,exportVideo,
         hasFile:clip=>cameras.some(camera=>lookup(clip,camera).length===1),
-        settings:()=>({folder,paths:Object.fromEntries(paths),offsets:Object.fromEntries(offsets),camera:node('catalogExportCamera').value})};
+        matchTable,selectBoundVideo,settings:()=>({folder,paths:Object.fromEntries(paths),offsets:Object.fromEntries(offsets),camera:node('catalogExportCamera').value})};
 })();
